@@ -12,6 +12,9 @@ dist/
 .idea/
 .vscode/
 
+# macOS
+.DS_Store
+
 # Runtime directories
 data/*
 !data/.gitkeep
@@ -38,3 +41,6 @@ datasets/*
 # Private external task files
 private_tasks/*
 !private_tasks/.gitkeep
+
+
+Course Project Spec.pdf
