@@ -177,6 +177,16 @@ def _replace_recorder_manager(env, env_cfg, args_cli):
             fps=args_cli.lerobot_dataset_fps,
         )
         env.recorder_manager = LeRobotRecorderManager(env_cfg.recorders, dataset_cfg, env)
+
+        # lerobot v3.0 compatibility: episode_buffer is None before start_episode() is called,
+        # but leisaac calls clear_episode_buffer() on the first reset. Skip if buffer is None.
+        dataset = env.recorder_manager._dataset_file_handler._lerobot_dataset
+        _orig_clear = dataset.clear_episode_buffer
+        def _safe_clear(_orig=_orig_clear, _ds=dataset):
+            if _ds.episode_buffer is None:
+                return
+            _orig()
+        dataset.clear_episode_buffer = _safe_clear
     else:
         env.recorder_manager = StreamingRecorderManager(env_cfg.recorders, env)
         env.recorder_manager.flush_steps = 100
@@ -365,6 +375,7 @@ def main():
 
     original_sigint_handler = signal.signal(signal.SIGINT, signal_handler)
     cnt = 1
+    episode_cnt = 1
     success_ID = []
     try:
         while simulation_app.is_running() and not simulation_app.is_exiting() and not interrupted:
@@ -391,10 +402,11 @@ def main():
                     )
                     if success:
                         print(f"\033[92m[Data Usage]{cnt}/{len(episodes)} success.\033[0m")
-                        success_ID.append(cnt)
+                        success_ID.append(episode_cnt)
                         cnt += 1
                     else:
                         print(f"\033[91m[Data Usage]{cnt}/{len(episodes)} fail.\033[0m")
+                    episode_cnt += 1
                     if should_break:
                         break
                 else:
@@ -436,6 +448,10 @@ def main():
         simulation_app.close()
     
     print(success_ID)
+    if success_ID:
+        with open("success_ids.txt", "a") as f:
+            for sid in success_ID:
+                f.write(f"{sid}\n")
 
 
 if __name__ == "__main__":

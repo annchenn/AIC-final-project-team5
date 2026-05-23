@@ -8,6 +8,8 @@ build/
 dist/
 *.egg-info/
 
+.venv/
+
 # IDE
 .idea/
 .vscode/
@@ -44,3 +46,5 @@ private_tasks/*
 
 
 Course Project Spec.pdf
+
+memo.txt
