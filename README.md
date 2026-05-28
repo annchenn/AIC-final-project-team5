@@ -142,6 +142,7 @@ Training runs on the **host machine** (not inside Docker) and produces a policy 
 
 See [LeRobot Training Procedure](docs/lerobot_training.md) for the full command reference, multi-GPU setup, and troubleshooting.
 
+
 # LeRobot Rollout
 
 Rollout loads your trained policy into the Isaac Lab simulator (inside the Docker container) to evaluate robot performance.

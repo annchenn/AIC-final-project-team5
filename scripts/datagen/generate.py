@@ -182,10 +182,10 @@ def _replace_recorder_manager(env, env_cfg, args_cli):
         # but leisaac calls clear_episode_buffer() on the first reset. Skip if buffer is None.
         dataset = env.recorder_manager._dataset_file_handler._lerobot_dataset
         _orig_clear = dataset.clear_episode_buffer
-        def _safe_clear(_orig=_orig_clear, _ds=dataset):
+        def _safe_clear(*args, _orig=_orig_clear, _ds=dataset, **kwargs):
             if _ds.episode_buffer is None:
                 return
-            _orig()
+            _orig(*args, **kwargs)
         dataset.clear_episode_buffer = _safe_clear
     else:
         env.recorder_manager = StreamingRecorderManager(env_cfg.recorders, env)
@@ -351,7 +351,10 @@ def main():
 
     resume_recorded_demo_count = 0
     if args_cli.record and args_cli.resume:
-        resume_recorded_demo_count = env.recorder_manager._dataset_file_handler.get_num_episodes()
+        try:
+            resume_recorded_demo_count = env.recorder_manager._dataset_file_handler.get_num_episodes()
+        except NotImplementedError:
+            resume_recorded_demo_count = env.recorder_manager._dataset_file_handler._lerobot_dataset.num_episodes
         print(f"Resume recording from existing dataset file with {resume_recorded_demo_count} demonstrations.")
     current_recorded_demo_count = resume_recorded_demo_count
 

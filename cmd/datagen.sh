@@ -15,29 +15,19 @@ export HF_LEROBOT_HOME=/workspace/aicapstone/datasets/lerobot_cache
 #     --lerobot_dataset_repo_id ${HF_USER}/${DATASET_NAME} \
 #     --object_poses data/merge/object_poses.json
 
-# Run 2: resume from local cache (no HF download)
-python scripts/datagen/generate.py \
-    --task HCIS-ToyBlocksCollection-SingleArm-v0 \
-    --num_envs 1 \
-    --device cuda \
-    --enable_cameras \
-    --record \
-    --resume \
-    --use_lerobot_recorder \
-    --lerobot_dataset_repo_id ${HF_USER}/${DATASET_NAME} \
-    --object_poses data/merge/object_poses.json
-
-# Run 3: resume from local cache (no HF download)
-python scripts/datagen/generate.py \
-    --task HCIS-ToyBlocksCollection-SingleArm-v0 \
-    --num_envs 1 \
-    --device cuda \
-    --enable_cameras \
-    --record \
-    --resume \
-    --use_lerobot_recorder \
-    --lerobot_dataset_repo_id ${HF_USER}/${DATASET_NAME} \
-    --object_poses data/merge/object_poses.json
+for i in $(seq 1 5); do
+    echo "=== Run $i / 5 ==="
+    python scripts/datagen/generate.py \
+        --task HCIS-ToyBlocksCollection-SingleArm-v0 \
+        --num_envs 1 \
+        --device cuda \
+        --enable_cameras \
+        --record \
+        --resume \
+        --use_lerobot_recorder \
+        --lerobot_dataset_repo_id ${HF_USER}/${DATASET_NAME} \
+        --object_poses data/merge/object_poses.json
+done
 
 # # Upload once at the end
 # hf upload ${HF_USER}/aic-finalproject-dataset \

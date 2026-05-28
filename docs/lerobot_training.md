@@ -35,17 +35,28 @@ For the official LeRobot training documentation, see:
 
 ## Training Command
 
-Copy and paste the command below into your terminal to start training. Make sure you have set `HF_USER` first (see Prerequisites step 4).
+Before running, export the required environment variables:
+```bash
+export HF_USER=ann0000000
+export DATASET_NAME=aic-finalproject-dataset-v2
+mkdir -p ~/tmp ~/wandb
+export TMPDIR=~/tmp
+export WANDB_DIR=~/wandb
+export WANDB_CACHE_DIR=~/wandb
+```
+
+Then run:
 
 ```bash
 lerobot-train \
-  --dataset.repo_id=${HF_USER}/<repo_id> \
+  --dataset.repo_id=${HF_USER}/${DATASET_NAME} \
+  --dataset.root=datasets/lerobot_cache \
   --policy.type=diffusion \
-  --output_dir=<your-output-dir> \
-  --job_name=cupstacking \
+  --output_dir=checkpoints/<run-name> \
+  --job_name=<run-name> \
   --policy.device=cuda \
   --wandb.enable=true \
-  --policy.repo_id=${HF_USER}/my_policy
+  --policy.repo_id=${HF_USER}/aic-finalproject-team5
 ```
 
 Training takes anywhere from a few hours to over a day depending on dataset size and GPU. You can monitor progress in the terminal output (or on the W&B dashboard if enabled).
