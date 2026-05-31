@@ -68,6 +68,7 @@ from leisaac.utils.env_utils import dynamic_reset_gripper_effort_limit_sim
 
 from simulator.datagen.state_machine.cup_stacking import CupStackingStateMachine
 from simulator.datagen.state_machine.cutlery_arrangement import CutleryArrangementStateMachine
+from simulator.datagen.state_machine.moving_cube_grasp import MovingCubeGraspStateMachine
 from simulator.datagen.state_machine.toy_blocks_collection import ToyBlocksCollectionStateMachine
 from simulator.utils.object_poses_loader import load_episode_poses
 
@@ -77,6 +78,7 @@ TASK_REGISTRY = {
     "HCIS-CupStacking-SingleArm-v0": (CupStackingStateMachine, "keyboard"),
     "HCIS-ToyBlocksCollection-SingleArm-v0": (ToyBlocksCollectionStateMachine, "keyboard"),
     "HCIS-CutleryArrangement-SingleArm-v0": (CutleryArrangementStateMachine, "keyboard"),
+    "HCIS-MovingCubeGrasp-SingleArm-v0": (MovingCubeGraspStateMachine, "keyboard"),
 }
 
 
@@ -106,6 +108,10 @@ class RateLimiter:
 
 def auto_terminate(env: ManagerBasedRLEnv | DirectRLEnv, success: bool):
     if hasattr(env, "termination_manager"):
+        # ``success`` term is only registered when recording (see _configure_env_cfg);
+        # in dry-run / visualization mode it's absent — skip silently.
+        if "success" not in env.termination_manager.active_terms:
+            return
         if success:
             env.termination_manager.set_term_cfg(
                 "success",
