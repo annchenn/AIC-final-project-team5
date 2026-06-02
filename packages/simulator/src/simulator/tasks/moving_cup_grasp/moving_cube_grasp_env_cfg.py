@@ -32,28 +32,71 @@ from simulator.utils.object_poses_loader import ObjectPoseConfig
 # Tag → object mapping for the UMI episode-poses JSON. Only one cube here.
 TAG_TO_OBJECT: dict[int, str] = {1: "cube"}
 ANCHOR_TAG_ID: int = 0
-ANCHOR_WORLD_POSE: tuple[float, float, float] = (0.35, 0.0, 0.0)
-OBJECT_Z: float = 0.05  # cube half-height above the table surface
 CUBE_SIZE: float = 0.05
+# Anchor at the centre of the measured table AABB (x ∈ [0.003, 0.703],
+# y ∈ [-0.677, -0.027], z_top = 0.041). Per-episode tvec is added in this
+# anchor frame, so the JSON values are simple table-local offsets.
+ANCHOR_WORLD_POSE: tuple[float, float, float] = (0.353, -0.352, 0.0)
+# Cube half-height (0.025) just above the measured table-top z (0.041). A
+# 2 mm clearance avoids spawn-time interpenetration with the table mesh.
+OBJECT_Z: float = 0.041 + CUBE_SIZE * 0.5 + 0.002  # = 0.068
 
 # Resolve basket USD relative to repo root
 #   parents: [0]=moving_cup_grasp [1]=tasks [2]=simulator [3]=src
 #   [4]=simulator(pkg) [5]=packages [6]=aicapstone-0531 (repo root)
 _REPO_ROOT = Path(__file__).resolve().parents[6]
 BASKET_USD_PATH = str(_REPO_ROOT / "basket_23" / "model_basket_23.usd")
-BASKET_POS: tuple[float, float, float] = (0.55, -0.45, 0.05)
+# Basket placed near the +x, -y corner of the table (within measured AABB,
+# leaving room for the basket footprint and the cube). Table top is z=0.041,
+# so basket bottom sits exactly on it.
+BASKET_POS: tuple[float, float, float] = (0.58, -0.55, 0.041)
 
-# Cube workspace bounds (world frame, relative to env origin). The FSM bounces
-# the injected velocity off these virtual walls so the cube never slides off
-# the table during the chase phase. Tune in tandem with ANCHOR_WORLD_POSE and
-# the per-episode object_poses.json initial positions.
-CUBE_WORKSPACE_X: tuple[float, float] = (0.10, 0.65)
-CUBE_WORKSPACE_Y: tuple[float, float] = (-0.35, 0.30)
+# Cube workspace bounds (world frame, env-local) — matches the MEASURED table
+# AABB: x ∈ [0.003, 0.703], y ∈ [-0.677, -0.027]. The FSM's rejection sampler
+# uses these to guarantee the cube cannot slide off the table.
+CUBE_WORKSPACE_X: tuple[float, float] = (0.05, 0.65)
+CUBE_WORKSPACE_Y: tuple[float, float] = (-0.65, -0.05)
+
+
+# ---------------------------------------------------------------------------
+# Drop-target basket geometry (built from 5 collision cuboids: bottom + 4 walls).
+# The basket_23 USD ships with rigid-body APIs on multiple sub-prims and makes
+# physx-fabric crash on GPU when loaded as either RigidObject or AssetBase, so
+# we construct a real basket out of primitives instead. Each piece is a static
+# AssetBase with collision enabled — the cube can land in it and rest, and the
+# success-termination z-range is satisfied.
+# ---------------------------------------------------------------------------
+_BASKET_INNER: float = 0.18    # inner footprint side (m)
+_BASKET_WALL: float = 0.01     # wall thickness (m)
+_BASKET_HEIGHT: float = 0.08   # wall height (m)
+_BASKET_BOTTOM_THK: float = 0.01
+_BASKET_OUTER: float = _BASKET_INNER + 2.0 * _BASKET_WALL
+_BX, _BY, _BZ = BASKET_POS
+
+
+def _basket_piece_cfg(
+    name: str, offset: tuple[float, float, float], size: tuple[float, float, float],
+    color: tuple[float, float, float] = (0.9, 0.6, 0.2),
+) -> AssetBaseCfg:
+    return AssetBaseCfg(
+        prim_path="{ENV_REGEX_NS}/Scene/drop_basket_" + name,
+        init_state=AssetBaseCfg.InitialStateCfg(
+            pos=(_BX + offset[0], _BY + offset[1], _BZ + offset[2]),
+            rot=(1.0, 0.0, 0.0, 0.0),
+        ),
+        spawn=sim_utils.CuboidCfg(
+            size=size,
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            visual_material=sim_utils.PreviewSurfaceCfg(
+                diffuse_color=color, metallic=0.0, roughness=0.8
+            ),
+        ),
+    )
 
 
 @configclass
 class MovingCubeGraspSceneCfg(SingleArmFrankaTaskSceneCfg):
-    """Living-room scene + a single sliding cube + a basket as drop target."""
+    """Living-room scene + a sliding cube + a drop basket built from 5 cuboids."""
 
     scene: AssetBaseCfg = LIVING_ROOM_CFG.replace(prim_path="{ENV_REGEX_NS}/Scene")
 
@@ -78,39 +121,51 @@ class MovingCubeGraspSceneCfg(SingleArmFrankaTaskSceneCfg):
         ),
     )
 
-    # Basket as the drop target. Kept rigid (not kinematic) so the FSM can
-    # still topple it if mis-placed — mass is high enough that the dropped
-    # cube does not knock it around.
-    basket: RigidObjectCfg = RigidObjectCfg(
-        prim_path="{ENV_REGEX_NS}/Scene/basket",
-        init_state=RigidObjectCfg.InitialStateCfg(
-            pos=BASKET_POS,
-            rot=(1.0, 0.0, 0.0, 0.0),
-        ),
-        spawn=sim_utils.UsdFileCfg(
-            usd_path=BASKET_USD_PATH,
-            mass_props=sim_utils.MassPropertiesCfg(mass=0.5),
-        ),
+    # Basket: bottom plate at z=0 (basket-local), 4 walls around it.
+    basket_bottom: AssetBaseCfg = _basket_piece_cfg(
+        "bottom",
+        offset=(0.0, 0.0, _BASKET_BOTTOM_THK * 0.5),
+        size=(_BASKET_OUTER, _BASKET_OUTER, _BASKET_BOTTOM_THK),
     )
+    basket_wall_xp: AssetBaseCfg = _basket_piece_cfg(
+        "wall_xp",
+        offset=(+(_BASKET_INNER + _BASKET_WALL) * 0.5, 0.0, _BASKET_HEIGHT * 0.5),
+        size=(_BASKET_WALL, _BASKET_OUTER, _BASKET_HEIGHT),
+    )
+    basket_wall_xn: AssetBaseCfg = _basket_piece_cfg(
+        "wall_xn",
+        offset=(-(_BASKET_INNER + _BASKET_WALL) * 0.5, 0.0, _BASKET_HEIGHT * 0.5),
+        size=(_BASKET_WALL, _BASKET_OUTER, _BASKET_HEIGHT),
+    )
+    basket_wall_yp: AssetBaseCfg = _basket_piece_cfg(
+        "wall_yp",
+        offset=(0.0, +(_BASKET_INNER + _BASKET_WALL) * 0.5, _BASKET_HEIGHT * 0.5),
+        size=(_BASKET_INNER, _BASKET_WALL, _BASKET_HEIGHT),
+    )
+    basket_wall_yn: AssetBaseCfg = _basket_piece_cfg(
+        "wall_yn",
+        offset=(0.0, -(_BASKET_INNER + _BASKET_WALL) * 0.5, _BASKET_HEIGHT * 0.5),
+        size=(_BASKET_INNER, _BASKET_WALL, _BASKET_HEIGHT),
+    )
+
+
 
 
 def cube_in_basket(
     env,
     cube_cfg: SceneEntityCfg,
-    basket_cfg: SceneEntityCfg,
     xy_radius: float,
     z_range: tuple[float, float],
 ) -> torch.Tensor:
     """Termination: cube xy is within ``xy_radius`` of basket and z within range."""
     cube: RigidObject = env.scene[cube_cfg.name]
-    basket: RigidObject = env.scene[basket_cfg.name]
 
     cube_pos = cube.data.root_pos_w - env.scene.env_origins
-    basket_pos = basket.data.root_pos_w - env.scene.env_origins
+    basket_pos = torch.tensor(env.cfg.basket_pos, device=cube_pos.device, dtype=cube_pos.dtype)
 
-    dxy = cube_pos[:, :2] - basket_pos[:, :2]
+    dxy = cube_pos[:, :2] - basket_pos[:2]
     horizontal_ok = torch.linalg.norm(dxy, dim=-1) < xy_radius
-    dz = cube_pos[:, 2] - basket_pos[:, 2]
+    dz = cube_pos[:, 2] - basket_pos[2]
     vertical_ok = (dz > z_range[0]) & (dz < z_range[1])
     return horizontal_ok & vertical_ok
 
@@ -121,7 +176,6 @@ class TerminationsCfg(SingleArmFrankaTerminationsCfg):
         func=cube_in_basket,
         params={
             "cube_cfg": SceneEntityCfg("cube"),
-            "basket_cfg": SceneEntityCfg("basket"),
             "xy_radius": 0.10,
             "z_range": (-0.05, 0.20),
         },
@@ -136,7 +190,7 @@ class MovingCubeGraspEnvCfg(SingleArmFrankaTaskEnvCfg):
     task_description: str = "grasp the sliding cube and drop it into the basket."
 
     # State-machine consumed knobs (also read by the FSM via env_cfg).
-    cube_linear_speed_range: tuple[float, float] = (0.05, 0.10)
+    cube_linear_speed_range: tuple[float, float] = (0.10, 0.18)
     cube_lift_threshold: float = 0.12
     cube_workspace_x: tuple[float, float] = CUBE_WORKSPACE_X
     cube_workspace_y: tuple[float, float] = CUBE_WORKSPACE_Y
