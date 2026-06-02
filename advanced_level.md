@@ -11,8 +11,13 @@
 
 > 記錄核心改動與踩過的坑
 
-- **2026-06-02**：移除「虛擬牆反彈」：軸線中途變負號會讓軸迹被折成不連續的折線，policy 需學會「預測轉彎」難度。改為 `_sample_cube_velocity` **在 episode 開始依 cube 位置抽「朝工作區中心 ±60°」的方向**，軸迹保證為完整直線；FSM 只在 phase 0+1 (≈4.3s) 注入速度，最大位移 ≈0.43 m，遠小於 workspace 尺寸，自然不會掉出。
-- **2026-06-02**：整合 `basket_23/model_basket_23.usd` 當放置目標；FSM 從 4 phases 擴成 7 phases（多 move-above-basket / lower / release+retreat）；success 條件改為 `cube_in_basket`（xy radius 0.10 m + z range `[-0.05, 0.20]`）；episode 20s → 30s。
+- **2026-06-02**：
+  - **修復 CUDA / PhysX 崩潰**：`basket_23.usd` 被 IsaacLab 直接當成 RigidObject 載入時會導致 Multi-body 碰撞計算崩潰（Out of Bounds 或是 Illegal Memory Access）。解法為將其改用 `sim_utils.CuboidCfg` 組裝成 5 塊單純的 AssetBase (底部+四面牆) 來完美避開 PhysX crash。
+  - **修復方塊掉出桌面邊緣**：重新測量了場景中客廳桌面的精確邊界，將 `cube_workspace_x` / `y` 改為嚴格限定在桌子範圍內。
+  - **移除「虛擬牆反彈」**：軸線中途變負號會讓軸迹被折成不連續的折線，policy 需學會「預測轉彎」難度。改為 `_sample_cube_velocity` **在 episode 開始依 cube 位置抽「朝工作區中心 ±60°」的方向**，軸迹保證為完整直線；FSM 只在 phase 0+1 (≈4.3s) 注入速度，最大位移遠小於 workspace 尺寸，自然不會掉出。
+  - **修復 FSM 預測追蹤爆衝、二次跳動**：原先的預測演算法 `target = cube_pos + vel * steps_left * dt` 會算出一個固定的「終點死點」，導致 IK 在 Phase 1 瞬間朝未來的點爆衝並卡死。已將演算法重寫為即時追蹤（**平滑下降至抓取高度並保留輕微的遲滯補償 `+ vel_xy * lead_time`**），使夾爪能完美跟著方塊同步下降。
+  - **修復夾爪擠壓桌面（Z 轴偏移過低）**：發現預設的 `_GRASP_Z_OFFSET = 0.02` 太低，會導致夾爪用力壓在桌面上引發物理異常。將抓取高度偏移量拉高 (`+ 0.08` 公尺)，並將滑動速度提升到 `0.10 ~ 0.18 m/s` 以確保動態效果明顯。
+  - **改寫 success 判斷條件**：將 success 條件改為 `cube_in_basket` 函式（判斷 xy 半徑與 z 高度落入籃子範圍內）；將 episode 長度從 20s 延長至 30s。
 - **2026-06-01**：建立 Advanced 任務 `HCIS-MovingCubeGrasp-SingleArm-v0`，FSM 用 `write_root_velocity_to_sim` 每 tick 注入等速直線運動，並用「剩餘步數 × 速度」做 predictive lead。
 
 ---
