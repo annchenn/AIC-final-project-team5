@@ -7,6 +7,16 @@
 
 ---
 
+## 0. Change Log
+
+> 僅記錄核心改動與踩過的坑，無關緊要的瑣事不寫。新項目加在最上面。
+
+- **2026-06-02**：废除「虛擬牆反彈」：軸線中途變負號會讓軸迹被折成不連續的折線，policy 需學會「預測轉彎」難度。改為 `_sample_cube_velocity` **在 episode 開始依 cube 位置抽「朝工作區中心 ±60°」的方向**，軸迹保證為完整直線；FSM 只在 phase 0+1 (≈4.3s) 注入速度，最大位移 ≈0.43 m，遠小於 workspace 尺寸，自然不會掉出。
+- **2026-06-02**：整合 `basket_23/model_basket_23.usd` 當放置目標；FSM 從 4 phases 擴成 7 phases（多 move-above-basket / lower / release+retreat）；success 條件改為 `cube_in_basket`（xy radius 0.10 m + z range `[-0.05, 0.20]`）；episode 20s → 30s。
+- **2026-06-01**：建立 Advanced 任務 `HCIS-MovingCubeGrasp-SingleArm-v0`，FSM 用 `write_root_velocity_to_sim` 每 tick 注入等速直線運動，並用「剩餘步數 × 速度」做 predictive lead。
+
+---
+
 ## 1. 任務定義
 
 | 項目 | 說明 |
@@ -14,10 +24,11 @@
 | Task ID | `HCIS-MovingCubeGrasp-SingleArm-v0` |
 | Scene | 沿用 Entry 的 living-room（`LIVING_ROOM_CFG`） |
 | 物件 | 單一藍色立方體，邊長 5 cm，質量 0.05 kg，低摩擦（dynamic friction 0.2） |
+| 放置目標 | **Hello Kitty basket**（`basket_23/model_basket_23.usd`），固定位置 `(0.55, -0.45, 0.05)` |
 | 機械臂 | Franka Panda（與 Entry 相同模板） |
-| 動態行為 | Cube 在桌面上以**等速直線運動**滑動，速度方向 / 大小隨機 |
-| 成功條件 | Cube 被舉起 ≥ 0.12 m（`cube_lifted` termination） |
-| Episode length | 20 秒（比 Entry 任務長，需追擊時間） |
+| 動態行為 | Cube 在桌面上以**等速直線運動**滑動；方向在 episode 開始抽一次（**朝工作區中心 ±60°**），全程完整直線 |
+| 成功條件 | Cube xy 距 basket ≤ 0.10 m 且 z 在 `[-0.05, 0.20]`（`cube_in_basket`） |
+| Episode length | **30 秒**（追擊 + 抓取 + 放置） |
 
 
 
@@ -59,30 +70,37 @@ class MovingCubeGraspSceneCfg(SingleArmFrankaTaskSceneCfg):
 ```python
 cube_linear_speed_range: tuple[float, float] = (0.05, 0.10)  # m/s
 cube_lift_threshold: float = 0.12                            # m
+cube_workspace_x: tuple[float, float] = (0.10, 0.65)         # 工作區 x 範圍（定义「中心」方向）
+cube_workspace_y: tuple[float, float] = (-0.35, 0.30)        # 工作區 y 範圍
+basket_pos: tuple[float, float, float] = (0.55, -0.45, 0.05)
 ```
 
-Success termination：
+Success termination（`cube_in_basket`）：
 
 ```python
-def cube_lifted(env, cube_cfg, lift_height):
-    cube_pos = env.scene[cube_cfg.name].data.root_pos_w - env.scene.env_origins
-    return cube_pos[:, 2] > (OBJECT_Z + lift_height)
+def cube_in_basket(env, cube_cfg, basket_cfg, xy_radius, z_range):
+    dxy = cube_pos[:, :2] - basket_pos[:, :2]
+    horizontal_ok = torch.linalg.norm(dxy, dim=-1) < xy_radius  # 0.10 m
+    dz = cube_pos[:, 2] - basket_pos[:, 2]
+    vertical_ok = (dz > z_range[0]) & (dz < z_range[1])         # [-0.05, 0.20]
+    return horizontal_ok & vertical_ok
 ```
 
-### 3.2 動態行為：等速直線運動
+### 3.2 動態行為：等速直線運動（朝中心）
 
-由 `MovingCubeGraspStateMachine` 在每個 tick 注入：
+設計原則：**全程軸迹為單一直線**，讓 imitation policy 只需估計一個固定的速度向量。
 
-- **Episode 開始**抽一次速度：
+- **Episode 開始**依 cube 初始位置抽一次速度：
+  - 方向：「cube → 工作區中心」的 bearing ± 60° 隨機 jitter
   - 大小：`uniform(0.05, 0.10)` m/s
-  - 方向角：`uniform(π/4, 3π/4)`（偏 +y，避免滑出工作區）
-  - `vz = 0`
-- **`pre_step`** 每 tick 呼叫 `cube.write_root_velocity_to_sim(vel)`，把同一組 `(vx, vy, 0)` 重新寫回，**抵消摩擦力 → 完全等速**。
-- **Phase 2（合夾）之後停止注入**，cube 改由 physics 接管（抓住跟著手走 / 沒抓到才會被摩擦力減速）。
+  - 保證方塊**始終滑向桌面中心**，不會往邊緣跑
+- **`pre_step`** 每 tick 以同一組 `(vx, vy, 0)` 呼叫 `cube.write_root_velocity_to_sim(vel)` 抵消摩擦力 → 完全等速、不改方向。
+- **Phase 2（合夾）之後停止注入**，cube 改由 physics 接管。
+- **為什麼不會掉出桌面**：FSM 只在 phase 0+1（260 steps @ 60 Hz ≈ 4.3 s）注入速度，最大位移 0.10 m/s × 4.3 s = 0.43 m，小於 workspace 任一邊長 → 物理上到不了邊緣，不需反彈機制。
 
-### 3.3 FSM 四階段（60 Hz）
+### 3.3 FSM 七階段（60 Hz）
 
-繼承自 `ToyBlocksCollectionStateMachine`，改成單物件 4 phases：
+繼承自 `ToyBlocksCollectionStateMachine`，擴成單物件 7 phases：
 
 | Phase | 步數 | 行為 |
 |---|---|---|
@@ -90,8 +108,11 @@ def cube_lifted(env, cube_cfg, lift_height):
 | 1. approach | 140 | 下降到抓取高度，用「剩餘步數 × cube 速度」做 **predictive lead** |
 | 2. grasp | 20 | 合夾 |
 | 3. lift | 80 | 直上抬起 |
+| 4. move above basket | 140 | 帶著 cube 移到 basket 正上方（仍合夾） |
+| 5. lower | 30 | 下降到 basket 內 |
+| 6. release + retreat | 40 | 鬆夾 + 上升離開 |
 
-FSM 是**特權專家**（privileged expert）：直接讀 `cube.data.root_pos_w`（ground-truth 座標）+ 自己注入的速度，**不看任何鏡頭**，所以能用簡單算式做完美預判。
+FSM 是**特權專家**（privileged expert）：直接讀 `cube` 與 `basket` 的 ground-truth 座標 + 自己注入的速度，**不看任何鏡頭**。
 
 ---
 
@@ -197,7 +218,10 @@ python scripts/rollout.py \
 - [x] Task 註冊（`HCIS-MovingCubeGrasp-SingleArm-v0`）
 - [x] Env / Scene config（`moving_cube_grasp_env_cfg.py`）
 - [x] FSM planner（`moving_cube_grasp.py`），含速度注入 + predictive lead
-- [x] Success termination（`cube_lifted`）
+- [x] **Basket 物件**（`basket_23/model_basket_23.usd`）整合進場景
+- [x] **速度方向朝工作區中心**，軸迹保證為單一直線，順帶解決「滑出平台」問題（且不增加 policy 學習難度）
+- [x] FSM 擴成 7 phases（追擊 + 抓取 + 搬運 + 放入籃子）
+- [x] Success termination（`cube_in_basket`，xy radius + z range）
 - [x] 合成 `object_poses.json`（8 個初始位置）
 - [x] 鏡頭設置（沿用 template 的 wrist + front）
 
@@ -216,14 +240,14 @@ python scripts/rollout.py \
 
 | 面向 | Entry (Toy Blocks Collection) | Advanced (Moving Cube Grasp) |
 |---|---|---|
-| 物件數 | 3 個積木 + 1 籃子 | 1 個方塊 |
-| 物件狀態 | 靜態 | **等速直線運動** |
-| FSM | 多物件 pick-and-place | 單物件追擊 + predictive lead |
-| Termination | 放入籃子 | 舉起 ≥ 12 cm |
-| Episode 長度 | 預設 15 s | **20 s** |
+| 物件數 | 3 個積木 + 1 storage_box | 1 個方塊 + 1 basket（basket_23） |
+| 物件狀態 | 靜態 | **等速直線運動（朝工作區中心）** |
+| FSM | 多物件 7-phase pick-and-place | 單物件 7-phase 追擊 + predictive lead + 放置 |
+| Termination | 3 顆積木全在 box 內 | cube 在 basket xy radius + z range 內 |
+| Episode 長度 | 預設 15 s | **30 s** |
 | 資料來源 | UMI 真實採集 + sim | **純合成 object_poses**（UMI 無法蒐集動態任務） |
-| Policy 挑戰 | 定位 + 抓取 | **隱式估速度 + 預測** |
-| 新增 knobs | — | `cube_linear_speed_range`、`cube_lift_threshold` |
+| Policy 挑戰 | 定位 + 抓取 + 放置 | **隱式估速度 + 預測 + 放置** |
+| 新增 knobs | — | `cube_linear_speed_range`、`cube_workspace_x/y`、`basket_pos` |
 
 ---
 
