@@ -288,10 +288,10 @@ class MovingCubeGraspStateMachine(ToyBlocksCollectionStateMachine):
             target = cube_pos_w.clone()
             
             # Smoothly descend from hover height to grasp height 
-            # We add an extra 0.1m to _GRASP_Z_OFFSET so we don't smash the table
+            # We add an extra 0.08m to _GRASP_Z_OFFSET so we don't smash the table
             denom = max(self._events_dt[self._event] - 1, 1)
             alpha = min(self._step_count / denom, 1.0)
-            target[:, 2] += (1.0 - alpha) * _HOVER_Z_OFFSET + alpha * (_GRASP_Z_OFFSET + 0.1)
+            target[:, 2] += (1.0 - alpha) * _HOVER_Z_OFFSET + alpha * (_GRASP_Z_OFFSET + 0.08)
             
             gripper = _constant_gripper(num_envs, device, _GRIPPER_OPEN)
         elif phase == 2:
@@ -299,7 +299,7 @@ class MovingCubeGraspStateMachine(ToyBlocksCollectionStateMachine):
             # stopped (pre_step) so the cube decelerates and the fingers can
             # close around it.
             target = cube_pos_w.clone()
-            target[:, 2] += _GRASP_Z_OFFSET + 0.1
+            target[:, 2] += _GRASP_Z_OFFSET + 0.08
             gripper = _constant_gripper(num_envs, device, _GRIPPER_CLOSE)
         elif phase == 3:
             # Lift straight up from where we grasped.
