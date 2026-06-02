@@ -9,9 +9,9 @@
 
 ## 0. Change Log
 
-> 僅記錄核心改動與踩過的坑，無關緊要的瑣事不寫。新項目加在最上面。
+> 記錄核心改動與踩過的坑
 
-- **2026-06-02**：废除「虛擬牆反彈」：軸線中途變負號會讓軸迹被折成不連續的折線，policy 需學會「預測轉彎」難度。改為 `_sample_cube_velocity` **在 episode 開始依 cube 位置抽「朝工作區中心 ±60°」的方向**，軸迹保證為完整直線；FSM 只在 phase 0+1 (≈4.3s) 注入速度，最大位移 ≈0.43 m，遠小於 workspace 尺寸，自然不會掉出。
+- **2026-06-02**：移除「虛擬牆反彈」：軸線中途變負號會讓軸迹被折成不連續的折線，policy 需學會「預測轉彎」難度。改為 `_sample_cube_velocity` **在 episode 開始依 cube 位置抽「朝工作區中心 ±60°」的方向**，軸迹保證為完整直線；FSM 只在 phase 0+1 (≈4.3s) 注入速度，最大位移 ≈0.43 m，遠小於 workspace 尺寸，自然不會掉出。
 - **2026-06-02**：整合 `basket_23/model_basket_23.usd` 當放置目標；FSM 從 4 phases 擴成 7 phases（多 move-above-basket / lower / release+retreat）；success 條件改為 `cube_in_basket`（xy radius 0.10 m + z range `[-0.05, 0.20]`）；episode 20s → 30s。
 - **2026-06-01**：建立 Advanced 任務 `HCIS-MovingCubeGrasp-SingleArm-v0`，FSM 用 `write_root_velocity_to_sim` 每 tick 注入等速直線運動，並用「剩餘步數 × 速度」做 predictive lead。
 
