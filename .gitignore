@@ -18,10 +18,7 @@ dist/
 .DS_Store
 
 # Runtime directories
-data/*
-!data/.gitkeep
-checkpoints/*
-!checkpoints/.gitkeep
+
 
 # Workspace member outputs
 packages/simulator/**/output/
