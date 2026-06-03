@@ -48,7 +48,7 @@
 | [packages/simulator/src/simulator/datagen/state_machine/moving_cube_grasp.py](packages/simulator/src/simulator/datagen/state_machine/moving_cube_grasp.py) | FSM planner：注入 cube 速度 + 追擊/抓取/抬起 |
 | [packages/simulator/src/simulator/tasks/__init__.py](packages/simulator/src/simulator/tasks/__init__.py) | 透過 `from . import moving_cup_grasp` 把任務註冊進去 |
 | [scripts/datagen/generate.py](scripts/datagen/generate.py) | 在 `TASK_REGISTRY` 中對應 `MovingCubeGraspStateMachine` |
-| [data/moving_cube_demo/object_poses.json](data/moving_cube_demo/object_poses.json) | 8 個合成 episodes 的 cube 初始位置（純 synthetic，不經 UMI） |
+| [data/moving_cube_demo/object_poses.json](data/moving_cube_demo/object_poses.json) | 80 個合成 episodes 的 cube 初始位置（純 synthetic，不經 UMI） |
 
 ---
 
@@ -145,7 +145,7 @@ Policy observation 內容：
 
 ### 5.1 Step 1 — Data Generation
 
-FSM 自動跑、只存成功 episode（`EXPORT_SUCCEEDED_ONLY`）。**每次 episode FSM 重抽速度**，所以同 8 個初始位置可累積多樣化資料。
+FSM 自動跑、只存成功 episode（`EXPORT_SUCCEEDED_ONLY`）。
 
 ```bash
 export HF_USER=ann0000000
