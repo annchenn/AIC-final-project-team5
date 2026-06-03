@@ -229,10 +229,10 @@ python scripts/rollout.py \
 - [x] Success termination（`cube_in_basket`，xy radius + z range）
 - [x] 合成 `object_poses.json`（8 個初始位置）
 - [x] 鏡頭設置（沿用 template 的 wrist + front）
+- [x] 新增 `cmd/datagen_moving_cube.sh` / `cmd/train_moving_cube.sh` 專用 script
+- [x] 跑 datagen 累積足量 successful episodes
 
 ### 待處理
-- [ ] 新增 `cmd/datagen_moving_cube.sh` / `cmd/train_moving_cube.sh` 專用 script
-- [ ] 跑 datagen 累積足量 successful episodes（目標 ≥ 100）
 - [ ] 訓練 Diffusion Policy checkpoint
 - [ ] 撰寫 `eval/moving_cube_grasp_eval.py`，做速度 sweep 評估
 - [ ] 整理 Advanced Report（含 motivation、evaluation procedure、results）
