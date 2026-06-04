@@ -115,6 +115,12 @@ parser.add_argument(
     help="Path to the local LeRobot checkpoint.",
 )
 parser.add_argument(
+    "--cube_speed",
+    type=float,
+    default=None,
+    help="Override cube_linear_speed_range with a fixed speed (m/s) for eval.",
+)
+parser.add_argument(
     "--debug_policy_shapes",
     action="store_true",
     help="Print observation and action tensor shapes around each local LeRobot inference call.",
@@ -477,6 +483,9 @@ def main():
             env_cfg.terminations.time_out = None
     max_episode_count = args_cli.eval_rounds
     env_cfg.recorders = None
+    if args_cli.cube_speed is not None and hasattr(env_cfg, "cube_linear_speed_range"):
+        env_cfg.cube_linear_speed_range = (args_cli.cube_speed, args_cli.cube_speed)
+        print(f"[rollout] cube_linear_speed_range overridden to {env_cfg.cube_linear_speed_range}")
 
     env: ManagerBasedRLEnv = gym.make(task_id, cfg=env_cfg).unwrapped
 
