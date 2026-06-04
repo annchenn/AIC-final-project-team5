@@ -73,11 +73,11 @@ class MovingCubeGraspSceneCfg(SingleArmFrankaTaskSceneCfg):
 額外 knobs（供 FSM 讀取，方便後續做 evaluation sweep）：
 
 ```python
-cube_linear_speed_range: tuple[float, float] = (0.05, 0.10)  # m/s
+cube_linear_speed_range: tuple[float, float] = (0.10, 0.18)  # m/s
 cube_lift_threshold: float = 0.12                            # m
-cube_workspace_x: tuple[float, float] = (0.10, 0.65)         # 工作區 x 範圍（定义「中心」方向）
-cube_workspace_y: tuple[float, float] = (-0.35, 0.30)        # 工作區 y 範圍
-basket_pos: tuple[float, float, float] = (0.55, -0.45, 0.05)
+cube_workspace_x: tuple[float, float] = (0.05, 0.65)         # 工作區 x 範圍（定义「中心」方向）
+cube_workspace_y: tuple[float, float] = (-0.65, -0.05)        # 工作區 y 範圍
+basket_pos: tuple[float, float, float] = (0.58, -0.55, 0.041)
 ```
 
 Success termination（`cube_in_basket`）：
@@ -110,7 +110,7 @@ def cube_in_basket(env, cube_cfg, basket_cfg, xy_radius, z_range):
 | Phase | 步數 | 行為 |
 |---|---|---|
 | 0. hover | 120 | 從 rest 位置平滑插值到 cube 正上方 |
-| 1. approach | 140 | 下降到抓取高度，用「剩餘步數 × cube 速度」做 **predictive lead** |
+| 1. approach | 180 | 下降到抓取高度，用「剩餘步數 × cube 速度」做 **predictive lead** |
 | 2. grasp | 20 | 合夾 |
 | 3. lift | 80 | 直上抬起 |
 | 4. move above basket | 140 | 帶著 cube 移到 basket 正上方（仍合夾） |
@@ -148,7 +148,7 @@ Policy observation 內容：
 FSM 自動跑、只存成功 episode（`EXPORT_SUCCEEDED_ONLY`）。
 
 ```bash
-export HF_USER=ann0000000
+export HF_USER=yun0523
 export DATASET_NAME=aic-finalproject-moving-cube-v1
 export HF_LEROBOT_HOME=/workspace/aicapstone/datasets/lerobot_cache
 
@@ -174,7 +174,7 @@ done
 ### 5.2 Step 2 — Policy Training（Diffusion Policy）
 
 ```bash
-export HF_USER=ann0000000
+export HF_USER=yun0523
 export DATASET_NAME=aic-finalproject-moving-cube-v1
 export RUN_NAME=moving_cube_run1
 
@@ -227,14 +227,14 @@ python scripts/rollout.py \
 - [x] **速度方向朝工作區中心**，軸迹保證為單一直線，順帶解決「滑出平台」問題（且不增加 policy 學習難度）
 - [x] FSM 擴成 7 phases（追擊 + 抓取 + 搬運 + 放入籃子）
 - [x] Success termination（`cube_in_basket`，xy radius + z range）
-- [x] 合成 `object_poses.json`（8 個初始位置）
+- [x] 合成 `object_poses.json`（80 個初始位置）
 - [x] 鏡頭設置（沿用 template 的 wrist + front）
 - [x] 新增 `cmd/datagen_moving_cube.sh` / `cmd/train_moving_cube.sh` 專用 script
 - [x] 跑 datagen 累積足量 successful episodes
+- [x] 訓練 Diffusion Policy checkpoint
+- [x] 撰寫 `eval/moving_cube_grasp_eval.py`，做速度 sweep 評估
 
 ### 待處理
-- [ ] 訓練 Diffusion Policy checkpoint
-- [ ] 撰寫 `eval/moving_cube_grasp_eval.py`，做速度 sweep 評估
 - [ ] 整理 Advanced Report（含 motivation、evaluation procedure、results）
 - [ ] 匯出 `configurations folder`（`docs/standalone_env_config_export.md`）
 - [ ] 撰寫 `README.txt` 重現步驟（Advanced 必繳）
