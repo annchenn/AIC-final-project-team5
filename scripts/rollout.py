@@ -530,10 +530,27 @@ def main():
     setup_dual_viewports()
 
 
-    success_count, episode_count = 0, 1
+    # Capture tracking: cube is considered "captured" when lifted above
+    # cube_lift_threshold (default 0.12 m in env local frame). Lets us
+    # separately report capture rate and basket-placement rate per proposal.
+    _lift_threshold: float = float(getattr(env_cfg, "cube_lift_threshold", 0.12))
+    _has_cube: bool = "cube" in env.scene.keys()
+    if not _has_cube:
+        print("[rollout] 'cube' not found in scene — capture tracking disabled.")
+
+    def _cube_is_captured() -> bool:
+        if not _has_cube:
+            return False
+        cube_z_local = (
+            env.scene["cube"].data.root_pos_w[0, 2]
+            - env.scene.env_origins[0, 2]
+        ).item()
+        return cube_z_local > _lift_threshold
+
+    success_count, capture_count, episode_count = 0, 0, 1
     while max_episode_count <= 0 or episode_count <= max_episode_count:
         print(f"[Evaluation] Evaluating episode {episode_count}...")
-        success, time_out = False, False
+        success, time_out, captured = False, False, False
         while simulation_app.is_running():
             with torch.inference_mode():
                 if controller.reset_state:
@@ -554,6 +571,8 @@ def main():
                     if env.cfg.dynamic_reset_gripper_effort_limit:
                         dynamic_reset_gripper_effort_limit_sim(env, teleop_device)
                     obs_dict, _, reset_terminated, reset_time_outs, _ = env.step(action)
+                    if not captured and _cube_is_captured():
+                        captured = True
                     if reset_terminated[0]:
                         success = True
                         break
@@ -563,24 +582,41 @@ def main():
                     if rate_limiter:
                         rate_limiter.sleep(env)
             if success:
-                print(f"[Evaluation] Episode {episode_count} is successful!")
+                print(f"[Evaluation] Episode {episode_count} is successful! (captured={captured})")
                 episode_count += 1
                 success_count += 1
+                if captured:
+                    capture_count += 1
                 policy.reset()
                 break
             if time_out:
-                print(f"[Evaluation] Episode {episode_count} timed out!")
+                print(f"[Evaluation] Episode {episode_count} timed out! (captured={captured})")
                 episode_count += 1
+                if captured:
+                    capture_count += 1
                 policy.reset()
                 break
+        completed = episode_count - 1
+        _pr = f"{success_count / capture_count:.3f}" if capture_count > 0 else "n/a"
         print(
-            f"[Evaluation] now success rate: {success_count / (episode_count - 1)} "
-            f" [{success_count}/{episode_count - 1}]"
+            f"[Evaluation] running  capture={capture_count}/{completed}"
+            f"  placement={success_count}/{capture_count} ({_pr})"
+            f"  end-to-end={success_count}/{completed}"
         )
 
+    completed = max_episode_count if max_episode_count > 0 else episode_count - 1
+    placement_rate = success_count / capture_count if capture_count > 0 else float("nan")
     print(
-        f"[Evaluation] Final success rate: {success_count / max_episode_count:.3f} "
-        f" [{success_count}/{max_episode_count}]"
+        f"[Evaluation] Final capture rate:    {capture_count / completed:.3f}"
+        f"  [{capture_count}/{completed}]"
+    )
+    print(
+        f"[Evaluation] Final placement rate:  {placement_rate:.3f}"
+        f"  [{success_count}/{capture_count}]  (placed | captured)"
+    )
+    print(
+        f"[Evaluation] Final end-to-end rate: {success_count / completed:.3f}"
+        f"  [{success_count}/{completed}]"
     )
 
     env.close()
