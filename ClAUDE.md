@@ -2,6 +2,74 @@
 This repository relies mainly on IsaacSim, IsaacLab to perform simulations tasks
 The documentation should aim for users without any technical background
 
+## Course Project: AI Capstone Spring 2026
+**Deadline: 2026/06/07 (Sun) 23:59** — no late submissions accepted.
+
+### Tiers
+- **Entry (80%, mandatory group):** Complete one of three pick-and-place tasks using the provided pipeline.
+- **Advanced (+20%, optional group):** Define new tasks in simulation; must complete Entry first.
+- **Independent Study (+30%, optional individual):** HCIS Lab research collaboration.
+
+### Assigned Tasks (pick one)
+1. Cup Stacking (Kitchen) — pick blue cup, stack on pink cup
+2. Cutlery Arrangement (Dining Room) — knife right, fork left of plate
+3. Toy Block Collection (Living Room) — collect 3 blocks into basket
+
+### Pipeline
+1. Real-World Data Collection with UMI (ED305 classroom)
+2. Reconstruction in Isaac Sim (object poses only, not raw trajectories)
+3. Robot Motion Generation (FSM planner or keyboard teleoperation)
+4. Policy Training (LeRobot ecosystem; default: Diffusion Policy)
+5. Inference & Evaluation (leaderboard + local rollout)
+
+**Only modifiable at Entry level:** training data and policy model (architecture + hyperparams).
+
+### Submission (to Google Drive)
+- `Team{TEAM_ID}_presentation.mp4` (≤15 min, English)
+- `Team{TEAM_ID}_project_entry_report.pdf`
+- Checkpoint folder, README.txt
+- Advanced only: advanced report, configs folder, custom `.usd` assets
+
+## Advanced Level Proposal — Group 5: "Catch Moving Mouse"
+
+**Task:** Robotic arm must intercept a continuously moving block (simulating a mouse) and deposit it into a basket. Extends Entry-level Toy Block Collection by introducing dynamic target unpredictability.
+
+**Four core capabilities:**
+1. Perception — infer target motion from RGB cameras (not ground-truth state) during rollout
+2. Motion Planning — adaptive interception to reach target before it escapes
+3. Grasping — stable grasp under motion uncertainty
+4. Task Completion — full intercept → grasp → transport → release pipeline
+
+**Dataset:** Auto-generated in Isaac Sim via FSM expert policy (has access to privileged target position/velocity). Moving block speed, direction, and starting position are randomized per episode. Only successful episodes stored.
+
+**Simulation Environment:**
+- Platform: NVIDIA Isaac Sim
+- Moving block with randomized initial position, speed, direction
+- All USD assets independently created/downloaded — no Entry-level USD files reused
+
+**Methods:**
+- Policy: Diffusion Policy trained via imitation learning on FSM demonstrations
+- Observation space: RGB images (wrist + front cameras) + robot joint states
+- Action space: robot end-effector trajectory (LeRobot format)
+- Key hyperparameter: shorter action horizon for faster reaction to moving targets
+
+**Evaluation Targets:**
+- Capture success rate: ≥ 60%
+- Basket placement rate (after capture): ≥ 80%
+- Generalization: tested across 3 speed levels
+
+**Key Challenges & Mitigations:**
+- FSM demo quality → start with slow/simple motions, increase difficulty gradually
+- Slow policy reaction → tune action/prediction horizon
+- Block escapes before arm arrives → FSM moves toward predicted interception point, not current position
+- Poor generalization → randomize speed, direction, start pos, path pattern
+- Sim-to-real gap → domain randomization on block mass, speed, friction
+
+### Key Links
+- LeRobot: https://huggingface.co/lerobot
+- Isaac Sim: https://docs.isaacsim.omniverse.nvidia.com/5.1.0/index.html
+- Diffusion Policy: https://diffusion-policy.cs.columbia.edu/
+
 # "uv" as the main package manager
 - uv run python to spawn python shell
 

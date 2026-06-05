@@ -102,6 +102,13 @@ class MovingCubeGraspSceneCfg(SingleArmFrankaTaskSceneCfg):
 
     cube: RigidObjectCfg = RigidObjectCfg(
         prim_path="{ENV_REGEX_NS}/Scene/cube",
+        init_state=RigidObjectCfg.InitialStateCfg(
+            # Default spawn at workspace centre on the table top.
+            # During datagen this is overridden by object_poses.json; during
+            # rollout there is no --object_poses arg so this value is used.
+            pos=(0.35, -0.35, OBJECT_Z),
+            rot=(1.0, 0.0, 0.0, 0.0),
+        ),
         spawn=sim_utils.CuboidCfg(
             size=(CUBE_SIZE, CUBE_SIZE, CUBE_SIZE),
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
