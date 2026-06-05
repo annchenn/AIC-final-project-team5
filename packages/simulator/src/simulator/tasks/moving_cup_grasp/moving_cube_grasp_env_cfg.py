@@ -179,6 +179,17 @@ def cube_in_basket(
     return horizontal_ok & vertical_ok
 
 
+def cube_fallen(
+    env,
+    cube_cfg: SceneEntityCfg,
+    z_threshold: float,
+) -> torch.Tensor:
+    """Termination: cube has fallen below the table (z_local < z_threshold)."""
+    cube: RigidObject = env.scene[cube_cfg.name]
+    cube_z_local = cube.data.root_pos_w[:, 2] - env.scene.env_origins[:, 2]
+    return cube_z_local < z_threshold
+
+
 @configclass
 class TerminationsCfg(SingleArmFrankaTerminationsCfg):
     success = DoneTerm(
@@ -186,7 +197,14 @@ class TerminationsCfg(SingleArmFrankaTerminationsCfg):
         params={
             "cube_cfg": SceneEntityCfg("cube"),
             "xy_radius": 0.10,
-            "z_range": (-0.05, 0.20),
+            "z_range": (-0.01, 0.10),
+        },
+    )
+    cube_fallen = DoneTerm(
+        func=cube_fallen,
+        params={
+            "cube_cfg": SceneEntityCfg("cube"),
+            "z_threshold": -0.1,  # 10 cm below table origin → definitely off the table
         },
     )
 
@@ -240,8 +258,6 @@ class MovingCubeGraspEnvCfg(SingleArmFrankaTaskEnvCfg):
             per_object_yaw_offset={"cube": 0.0},
             use_fixed_yaw=True,
         )
-
-
 class MovingCubeGraspEnv(ManagerBasedRLEnv):
     """ManagerBasedRLEnv subclass that injects constant cube velocity every step.
 
@@ -257,7 +273,7 @@ class MovingCubeGraspEnv(ManagerBasedRLEnv):
         super().__init__(cfg, render_mode, **kwargs)
         self._cube_vel_w: torch.Tensor | None = None
         self._needs_resample: torch.Tensor | None = None
-        self._steps_since_reset: torch.Tensor | None = None
+        self._steps_since_reset: torch.Tensor | None = None  # per-env step counter
         self._json_positions: list[tuple[float, float]] = self._load_json_positions()
 
     def _reset_idx(self, env_ids: torch.Tensor | None) -> None:
@@ -270,6 +286,10 @@ class MovingCubeGraspEnv(ManagerBasedRLEnv):
         else:
             self._needs_resample[env_ids] = True
             self._steps_since_reset[env_ids] = 0
+
+        # Randomise cube spawn position within workspace so bearing-to-centre
+        # varies each episode (datagen used per-episode poses from JSON; rollout
+        # has no JSON so we replicate the same variety here).
         self._randomise_cube_position(env_ids)
 
     @staticmethod
@@ -302,24 +322,28 @@ class MovingCubeGraspEnv(ManagerBasedRLEnv):
     def _randomise_cube_position(self, env_ids: torch.Tensor) -> None:
         n = len(env_ids)
         device = self.device
+
         if self._json_positions:
+            # Sample positions from the training distribution (object_poses.json).
             indices = torch.randint(len(self._json_positions), (n,))
             pos_list = [self._json_positions[i] for i in indices.tolist()]
             rx = torch.tensor([p[0] for p in pos_list], device=device)
             ry = torch.tensor([p[1] for p in pos_list], device=device)
         else:
+            # Fallback: uniform random within workspace.
             x_min, x_max = self.cfg.cube_workspace_x
             y_min, y_max = self.cfg.cube_workspace_y
             margin = 0.08
             rx = torch.empty(n, device=device).uniform_(x_min + margin, x_max - margin)
             ry = torch.empty(n, device=device).uniform_(y_min + margin, y_max - margin)
+
         cube = self.scene["cube"]
         root_state = cube.data.root_state_w[env_ids].clone()
         root_state[:, 0] = self.scene.env_origins[env_ids, 0] + rx
         root_state[:, 1] = self.scene.env_origins[env_ids, 1] + ry
         root_state[:, 2] = self.scene.env_origins[env_ids, 2] + OBJECT_Z
         root_state[:, 3:7] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=device)
-        root_state[:, 7:] = 0.0
+        root_state[:, 7:] = 0.0  # zero velocity
         cube.write_root_state_to_sim(root_state, env_ids=env_ids)
 
     def _sample_cube_velocity(self, env_ids: torch.Tensor) -> None:
@@ -331,19 +355,24 @@ class MovingCubeGraspEnv(ManagerBasedRLEnv):
         cx = 0.5 * (x_min + x_max)
         cy = 0.5 * (y_min + y_max)
         margin = 0.05
+
         cube = self.scene["cube"]
         cube_pos = cube.data.root_pos_w[env_ids] - self.scene.env_origins[env_ids]
         x0, y0 = cube_pos[:, 0], cube_pos[:, 1]
         bearing = torch.atan2(cy - y0, cx - x0)
+
         if self._cube_vel_w is None:
             self._cube_vel_w = torch.zeros(self.num_envs, 6, device=device)
+
         dt = self.physics_dt * self.cfg.decimation
         chase_time = (120 + 180) * dt + 0.4
         x_lo, x_hi = x_min + margin, x_max - margin
         y_lo, y_hi = y_min + margin, y_max - margin
+
         vx = torch.zeros(n, device=device)
         vy = torch.zeros(n, device=device)
         accepted = torch.zeros(n, dtype=torch.bool, device=device)
+
         for _ in range(50):
             speed = torch.empty(n, device=device).uniform_(speed_lo, speed_hi)
             jitter = torch.empty(n, device=device).uniform_(-math.pi / 3, math.pi / 3)
@@ -359,12 +388,15 @@ class MovingCubeGraspEnv(ManagerBasedRLEnv):
             accepted = accepted | take
             if bool(accepted.all()):
                 break
+
         slow = torch.full((n,), speed_lo, device=device)
         vx = torch.where(~accepted, slow * torch.cos(bearing), vx)
         vy = torch.where(~accepted, slow * torch.sin(bearing), vy)
+
         self._cube_vel_w[env_ids, 0] = vx
         self._cube_vel_w[env_ids, 1] = vy
         self._cube_vel_w[env_ids, 2:] = 0.0
+
         v0 = self._cube_vel_w[env_ids[0]]
         print(
             f"[MovingCubeGraspEnv] cube velocity sampled:"
@@ -380,27 +412,36 @@ class MovingCubeGraspEnv(ManagerBasedRLEnv):
         """
         if self._cube_vel_w is None or self._steps_since_reset is None:
             return
+
         cube = self.scene["cube"]
         lift_threshold: float = self.cfg.cube_lift_threshold
         cube_z_local = cube.data.root_pos_w[:, 2] - self.scene.env_origins[:, 2]
+
+        # Match FSM: only inject after settle delay AND while cube is on table.
         settled = self._steps_since_reset >= self._SETTLE_STEPS
         still_on_table = cube_z_local < lift_threshold
         active = (settled & still_on_table).nonzero(as_tuple=False).squeeze(-1)
         if active.numel() == 0:
             return
+
         current_vel = cube.data.root_vel_w.clone()
         vel = self._cube_vel_w.to(dtype=current_vel.dtype).clone()
-        vel[:, 2] = current_vel[:, 2]
-        vel[:, 3:] = current_vel[:, 3:]
+        vel[:, 2] = current_vel[:, 2]   # keep vz from physics (gravity/contact)
+        vel[:, 3:] = current_vel[:, 3:] # keep angular velocity from physics
         cube.write_root_velocity_to_sim(vel[active], env_ids=active)
 
     def step(self, action: torch.Tensor):
+        # Sample velocity on first step after reset (before physics runs)
         if self._needs_resample is not None and self._needs_resample.any():
             resample_ids = self._needs_resample.nonzero(as_tuple=False).squeeze(-1)
             self._sample_cube_velocity(resample_ids)
             self._needs_resample[resample_ids] = False
+
         self._inject_cube_velocity()
+
         result = super().step(action)
+
         if self._steps_since_reset is not None:
             self._steps_since_reset += 1
+
         return result
