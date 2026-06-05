@@ -9,12 +9,14 @@ intercept, lift, and place the moving target into the basket.
 
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 
 import isaaclab.sim as sim_utils
 import torch
 from isaaclab.assets import AssetBaseCfg, RigidObject, RigidObjectCfg
+from isaaclab.envs import ManagerBasedRLEnv
 from isaaclab.managers import SceneEntityCfg
 from isaaclab.managers import TerminationTermCfg as DoneTerm
 from isaaclab.utils import configclass
@@ -238,3 +240,167 @@ class MovingCubeGraspEnvCfg(SingleArmFrankaTaskEnvCfg):
             per_object_yaw_offset={"cube": 0.0},
             use_fixed_yaw=True,
         )
+
+
+class MovingCubeGraspEnv(ManagerBasedRLEnv):
+    """ManagerBasedRLEnv subclass that injects constant cube velocity every step.
+
+    Works in both datagen and rollout — no FSM required at inference time.
+    """
+
+    # Number of physics steps to wait after reset before injecting velocity.
+    # Matches FSM pre_step: cube spawns 2 mm above table and needs a few ticks
+    # to land; injecting vz-override too early makes the cube hover.
+    _SETTLE_STEPS: int = 20
+
+    def __init__(self, cfg: MovingCubeGraspEnvCfg, render_mode=None, **kwargs):
+        super().__init__(cfg, render_mode, **kwargs)
+        self._cube_vel_w: torch.Tensor | None = None
+        self._needs_resample: torch.Tensor | None = None
+        self._steps_since_reset: torch.Tensor | None = None
+        self._json_positions: list[tuple[float, float]] = self._load_json_positions()
+
+    def _reset_idx(self, env_ids: torch.Tensor | None) -> None:
+        super()._reset_idx(env_ids)
+        if env_ids is None or len(env_ids) == 0:
+            return
+        if self._needs_resample is None:
+            self._needs_resample = torch.ones(self.num_envs, dtype=torch.bool, device=self.device)
+            self._steps_since_reset = torch.zeros(self.num_envs, dtype=torch.long, device=self.device)
+        else:
+            self._needs_resample[env_ids] = True
+            self._steps_since_reset[env_ids] = 0
+        self._randomise_cube_position(env_ids)
+
+    @staticmethod
+    def _load_json_positions() -> list[tuple[float, float]]:
+        """Load cube (x, y) world positions from object_poses.json.
+
+        Falls back to empty list if the file is missing; _randomise_cube_position
+        will then fall back to uniform random.
+        """
+        json_path = _REPO_ROOT / "data" / "moving_cube_demo" / "object_poses.json"
+        if not json_path.is_file():
+            print(f"[MovingCubeGraspEnv] object_poses.json not found at {json_path}, "
+                  "falling back to uniform random spawn.", flush=True)
+            return []
+        with json_path.open() as f:
+            entries = json.load(f)
+        ax, ay = ANCHOR_WORLD_POSE[0], ANCHOR_WORLD_POSE[1]  # anchor_yaw = 0
+        positions = []
+        for entry in entries:
+            if entry.get("status") != "full":
+                continue
+            for obj in entry.get("objects", []):
+                if obj.get("object_name") == "cube":
+                    tvec = obj["tvec"]
+                    positions.append((ax + tvec[0], ay + tvec[1]))
+        print(f"[MovingCubeGraspEnv] loaded {len(positions)} cube positions from object_poses.json",
+              flush=True)
+        return positions
+
+    def _randomise_cube_position(self, env_ids: torch.Tensor) -> None:
+        n = len(env_ids)
+        device = self.device
+        if self._json_positions:
+            indices = torch.randint(len(self._json_positions), (n,))
+            pos_list = [self._json_positions[i] for i in indices.tolist()]
+            rx = torch.tensor([p[0] for p in pos_list], device=device)
+            ry = torch.tensor([p[1] for p in pos_list], device=device)
+        else:
+            x_min, x_max = self.cfg.cube_workspace_x
+            y_min, y_max = self.cfg.cube_workspace_y
+            margin = 0.08
+            rx = torch.empty(n, device=device).uniform_(x_min + margin, x_max - margin)
+            ry = torch.empty(n, device=device).uniform_(y_min + margin, y_max - margin)
+        cube = self.scene["cube"]
+        root_state = cube.data.root_state_w[env_ids].clone()
+        root_state[:, 0] = self.scene.env_origins[env_ids, 0] + rx
+        root_state[:, 1] = self.scene.env_origins[env_ids, 1] + ry
+        root_state[:, 2] = self.scene.env_origins[env_ids, 2] + OBJECT_Z
+        root_state[:, 3:7] = torch.tensor([1.0, 0.0, 0.0, 0.0], device=device)
+        root_state[:, 7:] = 0.0
+        cube.write_root_state_to_sim(root_state, env_ids=env_ids)
+
+    def _sample_cube_velocity(self, env_ids: torch.Tensor) -> None:
+        device = self.device
+        n = len(env_ids)
+        speed_lo, speed_hi = self.cfg.cube_linear_speed_range
+        x_min, x_max = self.cfg.cube_workspace_x
+        y_min, y_max = self.cfg.cube_workspace_y
+        cx = 0.5 * (x_min + x_max)
+        cy = 0.5 * (y_min + y_max)
+        margin = 0.05
+        cube = self.scene["cube"]
+        cube_pos = cube.data.root_pos_w[env_ids] - self.scene.env_origins[env_ids]
+        x0, y0 = cube_pos[:, 0], cube_pos[:, 1]
+        bearing = torch.atan2(cy - y0, cx - x0)
+        if self._cube_vel_w is None:
+            self._cube_vel_w = torch.zeros(self.num_envs, 6, device=device)
+        dt = self.physics_dt * self.cfg.decimation
+        chase_time = (120 + 180) * dt + 0.4
+        x_lo, x_hi = x_min + margin, x_max - margin
+        y_lo, y_hi = y_min + margin, y_max - margin
+        vx = torch.zeros(n, device=device)
+        vy = torch.zeros(n, device=device)
+        accepted = torch.zeros(n, dtype=torch.bool, device=device)
+        for _ in range(50):
+            speed = torch.empty(n, device=device).uniform_(speed_lo, speed_hi)
+            jitter = torch.empty(n, device=device).uniform_(-math.pi / 3, math.pi / 3)
+            angle = bearing + jitter
+            vx_c = speed * torch.cos(angle)
+            vy_c = speed * torch.sin(angle)
+            xe = x0 + vx_c * chase_time
+            ye = y0 + vy_c * chase_time
+            inside = (xe > x_lo) & (xe < x_hi) & (ye > y_lo) & (ye < y_hi)
+            take = (~accepted) & inside
+            vx = torch.where(take, vx_c, vx)
+            vy = torch.where(take, vy_c, vy)
+            accepted = accepted | take
+            if bool(accepted.all()):
+                break
+        slow = torch.full((n,), speed_lo, device=device)
+        vx = torch.where(~accepted, slow * torch.cos(bearing), vx)
+        vy = torch.where(~accepted, slow * torch.sin(bearing), vy)
+        self._cube_vel_w[env_ids, 0] = vx
+        self._cube_vel_w[env_ids, 1] = vy
+        self._cube_vel_w[env_ids, 2:] = 0.0
+        v0 = self._cube_vel_w[env_ids[0]]
+        print(
+            f"[MovingCubeGraspEnv] cube velocity sampled:"
+            f" vx={v0[0]:+.3f} vy={v0[1]:+.3f} m/s",
+            flush=True,
+        )
+
+    def _inject_cube_velocity(self) -> None:
+        """Write stored cube velocity to sim for envs where cube is still on the table.
+
+        Mirrors FSM pre_step: skip the first _SETTLE_STEPS steps so the cube
+        lands on the table before we override its horizontal velocity.
+        """
+        if self._cube_vel_w is None or self._steps_since_reset is None:
+            return
+        cube = self.scene["cube"]
+        lift_threshold: float = self.cfg.cube_lift_threshold
+        cube_z_local = cube.data.root_pos_w[:, 2] - self.scene.env_origins[:, 2]
+        settled = self._steps_since_reset >= self._SETTLE_STEPS
+        still_on_table = cube_z_local < lift_threshold
+        active = (settled & still_on_table).nonzero(as_tuple=False).squeeze(-1)
+        if active.numel() == 0:
+            return
+        current_vel = cube.data.root_vel_w.clone()
+        vel = self._cube_vel_w.to(dtype=current_vel.dtype).clone()
+        vel[:, 2] = current_vel[:, 2]
+        vel[:, 3:] = current_vel[:, 3:]
+        cube.write_root_velocity_to_sim(vel[active], env_ids=active)
+
+    def step(self, action: torch.Tensor):
+        if self._needs_resample is not None and self._needs_resample.any():
+            resample_ids = self._needs_resample.nonzero(as_tuple=False).squeeze(-1)
+            self._sample_cube_velocity(resample_ids)
+            self._needs_resample[resample_ids] = False
+        self._inject_cube_velocity()
+        result = super().step(action)
+        if self._steps_since_reset is not None:
+            self._steps_since_reset += 1
+        return result
