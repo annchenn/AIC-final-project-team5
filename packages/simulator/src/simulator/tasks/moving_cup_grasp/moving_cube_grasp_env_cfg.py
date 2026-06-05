@@ -375,7 +375,7 @@ class MovingCubeGraspEnv(ManagerBasedRLEnv):
 
         for _ in range(50):
             speed = torch.empty(n, device=device).uniform_(speed_lo, speed_hi)
-            jitter = torch.empty(n, device=device).uniform_(-math.pi / 3, math.pi / 3)
+            jitter = torch.empty(n, device=device).uniform_(-math.pi / 6, math.pi / 6)
             angle = bearing + jitter
             vx_c = speed * torch.cos(angle)
             vy_c = speed * torch.sin(angle)
