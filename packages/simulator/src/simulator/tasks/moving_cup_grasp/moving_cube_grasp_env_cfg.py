@@ -375,7 +375,7 @@ class MovingCubeGraspEnv(ManagerBasedRLEnv):
 
         for _ in range(50):
             speed = torch.empty(n, device=device).uniform_(speed_lo, speed_hi)
-            jitter = torch.empty(n, device=device).uniform_(-math.pi / 12, math.pi / 12)
+            jitter = torch.zeros(n, device=device)  # no jitter: cube always heads straight toward workspace centre
             angle = bearing + jitter
             vx_c = speed * torch.cos(angle)
             vy_c = speed * torch.sin(angle)
