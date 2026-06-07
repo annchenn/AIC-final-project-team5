@@ -4,7 +4,7 @@ Reuses the Franka IK / pose / place helpers from
 ``ToyBlocksCollectionStateMachine`` and adds:
 
 * ``pre_step``: writes a constant linear velocity to the cube each tick so it
-  slides across the table until the gripper closes. The velocity direction is
+  slides across the table until the cube is lifted. The velocity direction is
   sampled at episode start so the cube always heads **toward the centre of the
   workspace** (within ±60°). This keeps the trajectory a clean straight line
   for the whole chase phase — no bouncing, no direction changes — which is the
@@ -43,10 +43,9 @@ from simulator.datagen.state_machine.toy_blocks_collection import (
 _CUBE_NAME = "cube"
 _BASKET_NAME = "basket"
 # (hover, approach, grasp_close, lift, move_above_basket, lower, release/retreat).
-# 60 Hz step rate. Velocity is injected only through phase 1 — from phase 2
-# the cube decelerates from table friction and stops within ~25 ms, so the
-# gripper closes on a near-stationary target. This is the same pattern as the
-# original (working) commit 3b7e97d, just extended with basket placement.
+# 60 Hz step rate. Velocity is injected while the cube is still on the table.
+# This matches rollout dynamics: the target keeps sliding until the grasp
+# actually lifts it, rather than stopping when the FSM enters the close phase.
 _PHASE_DURATIONS = (120, 180, 40, 80, 140, 30, 40)
 _PHASES = len(_PHASE_DURATIONS)
 
@@ -196,12 +195,6 @@ class MovingCubeGraspStateMachine(ToyBlocksCollectionStateMachine):
             vy0 = float(self._cube_velocity_w[0, 1].item())
             print(f"[moving_cube] new episode cube velocity: vx={vx0:+.3f} vy={vy0:+.3f} m/s")
 
-        # Stop driving the cube once we start closing the gripper. Phase 2+
-        # lets table friction decelerate the cube within ~25 ms so the gripper
-        # closes on a near-stationary target.
-        if self._event >= 2:
-            return
-
         # Wait for the cube to settle on the table before injecting velocity.
         # We spawn slightly above the surface; the first few ticks are free
         # fall, during which we must NOT override vz or the cube hovers.
@@ -209,13 +202,18 @@ class MovingCubeGraspStateMachine(ToyBlocksCollectionStateMachine):
             return
 
         cube = env.scene[_CUBE_NAME]
+        cube_z_local = cube.data.root_pos_w[:, 2] - env.scene.env_origins[:, 2]
+        active = (cube_z_local < self._lift_threshold).nonzero(as_tuple=False).squeeze(-1)
+        if active.numel() == 0:
+            return
+
         # Read current vz so gravity / table contact are preserved; only
         # overwrite the horizontal components (the constant we want).
         current_vel = cube.data.root_vel_w.clone()
         vel = self._cube_velocity_w.to(device=env.device, dtype=current_vel.dtype).clone()
         vel[:, 2] = current_vel[:, 2]      # keep vz from physics
         vel[:, 3:] = current_vel[:, 3:]    # keep angular velocity from physics
-        cube.write_root_velocity_to_sim(vel)
+        cube.write_root_velocity_to_sim(vel[active], env_ids=active)
 
         # One-time sanity print: confirm cube actually moves.
         if self._event == 1 and self._step_count == 0:
@@ -259,11 +257,10 @@ class MovingCubeGraspStateMachine(ToyBlocksCollectionStateMachine):
             cube_quat_w, num_envs, device, cube_quat_w.dtype, yaw_offset=_GRASP_YAW_OFFSET
         )
 
-        # Lead the cube by exactly the remaining steps in phase 1, matching
-        # the original working FSM. At the END of phase 1, lead == 0, so the
-        # EE is on top of the cube's current position. Phase 2 then stops
-        # injecting velocity (see pre_step), the cube decelerates from
-        # friction, and the gripper closes on a near-stationary target.
+        # Lead the cube by exactly the remaining steps in phase 1. At the END
+        # of phase 1, lead == 0, so the EE is on top of the cube's current
+        # position. Velocity injection continues until the cube is lifted, so
+        # phase 2 closes on the same sliding target used during rollout.
         dt = env.physics_dt * env.cfg.decimation
         if self._cube_velocity_w is not None:
             vel_xy = self._cube_velocity_w[:, :2].to(target_quat_w.device, dtype=cube_pos_w.dtype)
@@ -295,9 +292,9 @@ class MovingCubeGraspStateMachine(ToyBlocksCollectionStateMachine):
             
             gripper = _constant_gripper(num_envs, device, _GRIPPER_OPEN)
         elif phase == 2:
-            # Close gripper at cube's current position. Velocity injection has
-            # stopped (pre_step) so the cube decelerates and the fingers can
-            # close around it.
+            # Close gripper at the cube's current position. Velocity injection
+            # continues until the grasp actually lifts the cube, matching
+            # rollout dynamics.
             target = cube_pos_w.clone()
             target[:, 2] += _GRASP_Z_OFFSET + 0.08
             gripper = _constant_gripper(num_envs, device, _GRIPPER_CLOSE)
