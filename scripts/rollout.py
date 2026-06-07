@@ -547,10 +547,17 @@ def main():
         ).item()
         return cube_z_local > _lift_threshold
 
+    def _termination_term(name: str) -> bool:
+        if not hasattr(env, "termination_manager"):
+            return False
+        if name not in env.termination_manager.active_terms:
+            return False
+        return bool(env.termination_manager.get_term(name)[0].item())
+
     success_count, capture_count, episode_count = 0, 0, 1
     while max_episode_count <= 0 or episode_count <= max_episode_count:
         print(f"[Evaluation] Evaluating episode {episode_count}...")
-        success, time_out, captured = False, False, False
+        success, time_out, failed, captured = False, False, False, False
         while simulation_app.is_running():
             with torch.inference_mode():
                 if controller.reset_state:
@@ -573,8 +580,11 @@ def main():
                     obs_dict, _, reset_terminated, reset_time_outs, _ = env.step(action)
                     if not captured and _cube_is_captured():
                         captured = True
-                    if reset_terminated[0]:
+                    if _termination_term("success"):
                         success = True
+                        break
+                    if reset_terminated[0]:
+                        failed = True
                         break
                     if reset_time_outs[0]:
                         time_out = True
@@ -585,6 +595,13 @@ def main():
                 print(f"[Evaluation] Episode {episode_count} is successful! (captured={captured})")
                 episode_count += 1
                 success_count += 1
+                if captured:
+                    capture_count += 1
+                policy.reset()
+                break
+            if failed:
+                print(f"[Evaluation] Episode {episode_count} terminated without success! (captured={captured})")
+                episode_count += 1
                 if captured:
                     capture_count += 1
                 policy.reset()

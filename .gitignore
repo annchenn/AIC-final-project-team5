@@ -45,3 +45,7 @@ private_tasks/*
 Course Project Spec.pdf
 
 memo.txt
+
+# Local checkpoints
+checkpoints/*
+!checkpoints/.gitkeep

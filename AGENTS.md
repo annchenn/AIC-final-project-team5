@@ -1,6 +1,7 @@
 # AICapstone
 This repository relies mainly on IsaacSim, IsaacLab to perform simulations tasks
 The documentation should aim for users without any technical background
+For concise project progress notes, read `progress.md`.
 
 # "uv" as the main package manager
 - uv run python to spawn python shell

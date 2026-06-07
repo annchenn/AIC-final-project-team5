@@ -149,6 +149,21 @@ Rollout loads your trained policy into the Isaac Lab simulator (inside the Docke
 
 See [LeRobot Rollout (Policy Evaluation)](docs/lerobot_rollout.md) for the full procedure.
 
+## AI-Facing Notes
+
+These root Markdown files are used by AI assistants and collaborators:
+
+| File | Purpose |
+|------|---------|
+| [AGENTS.md](AGENTS.md) | Instructions for AI coding agents: project constraints, package manager, and coding style. |
+| [ClAUDE.md](ClAUDE.md) | Course/project direction and proposal context. Use it for goals, requirements, and evaluation targets. |
+| [spec.md](spec.md) | Project specification and submission requirements. Treat it as requirements, not progress. |
+| [advanced_level.md](advanced_level.md) | Advanced task design and implementation summary. Keep it stable and report-oriented. |
+| [progress.md](progress.md) | Concise English project progress log. Use this for current status, decisions, blockers, and next steps. |
+| [hackmd.md](hackmd.md) | Raw team working notes copied from HackMD. Useful for context, but less formal than `progress.md`. |
+
+Progress notes should be dated, brief, and verifiable. Record what changed, what was observed, what remains blocked, and the next concrete action. Do not duplicate long command logs; keep commands only when they are needed to reproduce the current step.
+
 ## Documentation
 
 | Document | Description |
