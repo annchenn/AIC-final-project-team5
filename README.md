@@ -140,6 +140,40 @@ hf upload ${HF_USER}/<repo_id> ~/.cache/huggingface/lerobot/${HF_USER}/<repo_id>
 
 Training runs on the **host machine** (not inside Docker) and produces a policy checkpoint from your generated dataset. Requires an Nvidia GPU.
 
+## Train with a teammate dataset
+
+If you want to train with a dataset that someone else already uploaded, set the
+dataset owner separately from your own Hugging Face username. The dataset owner
+is the account that owns the uploaded dataset. Your own username is used for the
+new policy output, so you do not overwrite another teammate's training result.
+
+For example, to train from Mike's moving-cube dataset:
+
+```bash
+export DATASET_OWNER=mikehsuhoodie
+export DATASET_NAME=moving-cube-grasp-fsm-20260607-mike
+export HF_USER=<your-huggingface-username>
+export RUN_NAME=moving-cube-grasp-from-mike-data-<your-name>
+export POLICY_REPO=aic-finalproject-team5-<your-name>
+```
+
+Then train on the host machine:
+
+```bash
+lerobot-train \
+  --dataset.repo_id=${DATASET_OWNER}/${DATASET_NAME} \
+  --dataset.root=datasets/lerobot_cache \
+  --policy.type=diffusion \
+  --output_dir=checkpoints/${RUN_NAME} \
+  --job_name=${RUN_NAME} \
+  --policy.device=cuda \
+  --wandb.enable=true \
+  --policy.repo_id=${HF_USER}/${POLICY_REPO}
+```
+
+Use a unique `RUN_NAME` and `POLICY_REPO` for each training run. This keeps the
+input dataset shared while keeping each person's trained checkpoint separate.
+
 See [LeRobot Training Procedure](docs/lerobot_training.md) for the full command reference, multi-GPU setup, and troubleshooting.
 
 
