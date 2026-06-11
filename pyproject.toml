@@ -10,7 +10,10 @@ readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.10, <3.12"
 dependencies = [
+    "num2words>=0.5.14",
+    "transformers>=4.57.6",
     "umi",
+    "wandb>=0.24.2",
 ]
 
 [project.optional-dependencies]
