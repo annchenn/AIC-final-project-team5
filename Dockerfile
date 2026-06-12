@@ -96,7 +96,8 @@ RUN python -m pip install --upgrade pip \
         setuptools==65 \
         flatdict==4.0.0 \
         huggingface-hub==0.35.3 \
-        transformers==4.57.6
+        transformers==4.57.6 \
+        num2words==0.5.14
 
 COPY dependencies/IsaacLab /workspace/aicapstone/dependencies/IsaacLab
 COPY packages/simulator /workspace/aicapstone/packages/simulator

@@ -1,6 +1,6 @@
 # AI Capstone
 
-Sim-to-real imitation-learning pipeline for robot manipulation tasks. Record human demonstrations with UMI, process them through SLAM, generate synthetic data in Isaac Lab, train a diffusion policy with LeRobot, and evaluate it in simulation.
+Sim-to-real imitation-learning pipeline for robot manipulation tasks. Record human demonstrations with UMI, process them through SLAM, generate synthetic data in Isaac Lab, train a LeRobot policy, and evaluate it in simulation. This branch adds temporal observations, SmolVLA training, and validation-loss early stopping for the moving-cube task.
 
 > **Platform:** Linux only.
 
@@ -140,6 +140,126 @@ hf upload ${HF_USER}/<repo_id> ~/.cache/huggingface/lerobot/${HF_USER}/<repo_id>
 
 Training runs on the **host machine** (not inside Docker) and produces a policy checkpoint from your generated dataset. Requires an Nvidia GPU.
 
+## SmolVLA dependencies
+
+The temporal SmolVLA workflow uses the SmolVLA implementation already included
+with LeRobot. Compared with the original diffusion/ACT workflow, it additionally
+requires:
+
+- `transformers>=4.57.6` for the SmolVLM2 vision-language backbone.
+- `num2words>=0.5.14` for the SmolVLM processor.
+- The pretrained `HuggingFaceTB/SmolVLM2-500M-Video-Instruct` model files. These
+  are downloaded from Hugging Face when first needed and are not a Python package.
+
+Install the host dependencies from the repository root:
+
+```bash
+uv sync
+```
+
+The Isaac Lab Docker image installs the same Python dependencies during build.
+If using an older existing image that reports that `num2words` is missing,
+install it once inside that running container:
+
+```bash
+python -m pip install "num2words>=0.5.14"
+```
+
+Containers started with `--rm` lose manual package installations when they exit.
+Rebuild the image to make the dependency permanent:
+
+```bash
+make build-isaaclab
+```
+
+## Temporal SmolVLA with early stopping
+
+Run training on the host machine, not inside the Isaac Lab container. The
+following commands use the moving-cube dataset and the defaults from
+`cmd/train_moving_cube_smolvla_temporal_early_stop.sh`.
+
+### 1. Download the dataset
+
+Log in to Hugging Face once, then download the complete LeRobot dataset into
+the path expected by the training script:
+
+```bash
+hf auth login
+
+export DATASET_OWNER=yun0523
+export DATASET_NAME=moving-cube-grasp
+export DATASET_ROOT="$PWD/datasets/lerobot_cache/${DATASET_OWNER}/${DATASET_NAME}"
+
+hf download "${DATASET_OWNER}/${DATASET_NAME}" \
+  --repo-type dataset \
+  --local-dir "${DATASET_ROOT}"
+```
+
+Log in to W&B for online training metrics:
+
+```bash
+uv run wandb login
+```
+
+After downloading, this file must exist:
+
+```text
+datasets/lerobot_cache/yun0523/moving-cube-grasp/meta/info.json
+```
+
+### 2. Start training
+
+This example validates every 20,000 optimizer steps. `PATIENCE=1` stops after
+the first validation that does not improve on the best previous validation.
+`VAL_MAX_BATCHES=500` limits validation time; set it to `0` to use every
+validation example.
+
+```bash
+SOURCE_DATASET_ROOT="${DATASET_ROOT}" \
+MAX_STEPS=200000 \
+EVAL_EVERY=20000 \
+PATIENCE=1 \
+MIN_DELTA=0 \
+VAL_MAX_BATCHES=500 \
+VAL_BATCH_SIZE=8 \
+WANDB_ENABLE=true \
+bash cmd/train_moving_cube_smolvla_temporal_early_stop.sh \
+  moving-cube-temporal-es-v1
+```
+
+The first run automatically creates a fixed train/validation episode split.
+The main outputs are:
+
+```text
+checkpoints/moving-cube-temporal-es-v1/checkpoints/020000/
+checkpoints/moving-cube-temporal-es-v1_early_stop/episode_split.json
+checkpoints/moving-cube-temporal-es-v1_early_stop/early_stop_state.json
+checkpoints/moving-cube-temporal-es-v1_early_stop/validation_history.jsonl
+```
+
+To continue an interrupted run, run the same command again with the same run
+name. The script finds the highest numbered complete checkpoint and restores
+the optimizer, scheduler, training step, and earlier validation history.
+
+### 3. Download an existing checkpoint
+
+Training checkpoints are separate from the SmolVLM2 backbone downloaded by
+Transformers. To evaluate or resume a checkpoint already uploaded by the team,
+download its model repository into the same local run directory:
+
+```bash
+export MODEL_REPO=mikehsuhoodie/aic-finalproject-team5-smolvla-temporal
+export RUN_NAME=moving-cube-temporal-es-v1
+
+hf download "${MODEL_REPO}" \
+  --local-dir "checkpoints/${RUN_NAME}"
+```
+
+For resuming training, the downloaded checkpoint must include both
+`pretrained_model/` and `training_state/`. A directory containing only
+`pretrained_model/` is sufficient for rollout, but cannot restore the optimizer
+or continue from the saved training step.
+
 ## Train with a teammate dataset
 
 If you want to train with a dataset that someone else already uploaded, set the
@@ -181,6 +301,61 @@ See [LeRobot Training Procedure](docs/lerobot_training.md) for the full command 
 
 Rollout loads your trained policy into the Isaac Lab simulator (inside the Docker container) to evaluate robot performance.
 
+`scripts/rollout.py` runs the policy in the simulator and is the right tool for
+watching the robot, debugging one checkpoint, or testing a chosen cube speed.
+`eval/moving_cube_grasp_eval.py` automates repeated rollouts at several speeds,
+collects capture, placement, and end-to-end success rates, and generates a
+summary plot. The current eval wrapper still selects the original diffusion
+policy, so use `scripts/rollout.py` for temporal SmolVLA checkpoints until that
+wrapper is updated.
+
+## Temporal SmolVLA rollout notes
+
+SmolVLA rollout differs from the original diffusion-policy workflow in several
+important ways:
+
+- Use `--policy_type lerobot-smolvla`.
+- Point `--policy_checkpoint_path` at the checkpoint's `pretrained_model/`
+  directory, not the parent checkpoint directory.
+- Keep `--policy_action_horizon 4`, matching the value used for training.
+- Keep `--policy_observation_fps 30` so the temporal camera history is sampled
+  at the same rate expected by the policy.
+- Use `scripts/rollout.py` directly. The current
+  `eval/moving_cube_grasp_eval.py` wrapper is for diffusion policies.
+- `--enable_cameras` is required. `--headless` hides the simulator window but
+  still renders the wrist and front camera observations used by SmolVLA.
+
+On a regular SSH server with an X server available at display `:0`, launch the
+container from the repository root on the host:
+
+```bash
+DISPLAY=:0 make launch-isaaclab
+```
+
+Then run the 60,000-step checkpoint from inside the container:
+
+```bash
+export VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
+
+python scripts/rollout.py \
+  --headless \
+  --task HCIS-MovingCubeGrasp-SingleArm-v0 \
+  --policy_type lerobot-smolvla \
+  --policy_checkpoint_path checkpoints/moving-cube-temporal-es-v1/checkpoints/060000/pretrained_model \
+  --policy_action_horizon 4 \
+  --policy_observation_fps 30 \
+  --eval_rounds 20 \
+  --episode_length_s 30 \
+  --device cuda \
+  --enable_cameras
+```
+
+VNC is not required for this headless command. Before accepting the rollout
+results, check the startup log. It should list the Nvidia GPU with
+`Graphics API: Vulkan`. Do not use results from a run that reports
+`ERROR_INCOMPATIBLE_DRIVER`, `no suitable CUDA GPU`, or that the PhysX GPU
+pipeline switched to software.
+
 See [LeRobot Rollout (Policy Evaluation)](docs/lerobot_rollout.md) for the full procedure.
 
 ## AI-Facing Notes
@@ -193,10 +368,8 @@ These root Markdown files are used by AI assistants and collaborators:
 | [ClAUDE.md](ClAUDE.md) | Course/project direction and proposal context. Use it for goals, requirements, and evaluation targets. |
 | [spec.md](spec.md) | Project specification and submission requirements. Treat it as requirements, not progress. |
 | [advanced_level.md](advanced_level.md) | Advanced task design and implementation summary. Keep it stable and report-oriented. |
-| [progress.md](progress.md) | Concise English project progress log. Use this for current status, decisions, blockers, and next steps. |
-| [hackmd.md](hackmd.md) | Raw team working notes copied from HackMD. Useful for context, but less formal than `progress.md`. |
+| `hackmd.md` | Optional raw team working notes copied from HackMD. |
 
-Progress notes should be dated, brief, and verifiable. Record what changed, what was observed, what remains blocked, and the next concrete action. Do not duplicate long command logs; keep commands only when they are needed to reproduce the current step.
 
 ## Documentation
 

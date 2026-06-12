@@ -37,6 +37,67 @@ def _pretrained_dir(path: Path) -> Path:
     return path
 
 
+def _existing_variant(path: Path) -> Path | None:
+    """Return an existing path with common run-name separators swapped."""
+
+    path_text = str(path)
+    variants = []
+    if "_" in path_text:
+        variants.append(Path(path_text.replace("_", "-")))
+    if "-" in path_text:
+        variants.append(Path(path_text.replace("-", "_")))
+
+    for variant in variants:
+        if variant.exists():
+            return variant
+    return None
+
+
+def _missing_path_message(label: str, path: Path) -> str:
+    message = f"{label} does not exist: {path}"
+    variant = _existing_variant(path)
+    if variant is not None:
+        message += f"\n  Did you mean: {variant}"
+        return message
+
+    if not path.parent.exists() and path.parent.parent.exists():
+        normalized_parent_name = path.parent.name.replace("_", "").replace("-", "")
+        for sibling in path.parent.parent.iterdir():
+            normalized_sibling_name = sibling.name.replace("_", "").replace("-", "")
+            if sibling.is_dir() and normalized_sibling_name == normalized_parent_name:
+                sibling_path = sibling / path.name
+                if sibling_path.exists():
+                    message += f"\n  Did you mean: {sibling_path}"
+                else:
+                    message += f"\n  Similar directory exists but this file is missing: {sibling}"
+                break
+
+    return message
+
+
+def _validate_input_paths(args: argparse.Namespace) -> None:
+    errors = []
+
+    if not args.split.is_file():
+        errors.append(
+            _missing_path_message("Validation split", args.split)
+            + "\n  Create it first, for example:\n"
+            + "    uv run python scripts/split_lerobot_episodes.py \\\n"
+            + f"      --dataset-repo-id {args.dataset_repo_id} \\\n"
+            + f"      --dataset-root {args.dataset_root} \\\n"
+            + f"      --output {args.split}"
+        )
+
+    if not _pretrained_dir(args.checkpoint).is_dir():
+        errors.append(_missing_path_message("Checkpoint", args.checkpoint))
+
+    if not args.dataset_root.is_dir():
+        errors.append(_missing_path_message("Dataset root", args.dataset_root))
+
+    if errors:
+        raise FileNotFoundError("\n\n".join(errors))
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", type=Path, required=True)
@@ -50,6 +111,11 @@ def main() -> None:
     parser.add_argument("--max-batches", type=int, default=0, help="0 means validate all val batches")
     parser.add_argument("--output", type=Path, default=None)
     args = parser.parse_args()
+
+    try:
+        _validate_input_paths(args)
+    except FileNotFoundError as exc:
+        parser.exit(2, f"error: {exc}\n")
 
     split = json.loads(args.split.read_text())
     val_episodes = [int(ep) for ep in split["val_episodes"]]

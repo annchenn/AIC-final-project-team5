@@ -26,6 +26,7 @@ VAL_MAX_BATCHES=${VAL_MAX_BATCHES:-0}
 TRAIN_BATCH_SIZE=${TRAIN_BATCH_SIZE:-}
 N_ACTION_STEPS=${N_ACTION_STEPS:-4}
 WANDB_ENABLE=${WANDB_ENABLE:-true}
+WANDB_MODE=${WANDB_MODE:-}
 
 mkdir -p "${EARLY_STOP_DIR}" ~/tmp ~/wandb
 export TMPDIR=${TMPDIR:-~/tmp}
@@ -53,11 +54,95 @@ current_step=0
 
 if [[ -L "${OUTPUT_DIR}/checkpoints/last" ]]; then
   last_checkpoint=$(uv run python -c "from pathlib import Path; print((Path('${OUTPUT_DIR}') / 'checkpoints' / 'last').resolve())")
+elif [[ -d "${OUTPUT_DIR}/checkpoints" ]]; then
+  last_checkpoint=$(uv run python -c "from pathlib import Path; checkpoints=Path('${OUTPUT_DIR}') / 'checkpoints'; candidates=[p for p in checkpoints.iterdir() if p.is_dir() and p.name.isdigit() and (p / 'training_state' / 'training_step.json').is_file()]; print(max(candidates, key=lambda p: int(p.name)) if candidates else '')")
+fi
+
+if [[ -n "${last_checkpoint}" ]]; then
   current_step=$(uv run python -c "import json; print(json.load(open('${last_checkpoint}/training_state/training_step.json'))['step'])")
   if [[ -f "${EARLY_STOP_STATE}" ]]; then
     best_loss=$(uv run python -c "import json; data=json.load(open('${EARLY_STOP_STATE}')); print(data.get('best_loss', 'inf'))")
     best_checkpoint=$(uv run python -c "import json; data=json.load(open('${EARLY_STOP_STATE}')); print(data.get('best_checkpoint', ''))")
     patience_counter=$(uv run python -c "import json; data=json.load(open('${EARLY_STOP_STATE}')); print(data.get('patience_counter', 0))")
+  elif compgen -G "${EARLY_STOP_DIR}/validation_step_*.json" > /dev/null; then
+    recovery_json=$(EARLY_STOP_DIR="${EARLY_STOP_DIR}" CURRENT_STEP="${current_step}" MIN_DELTA_VALUE="${MIN_DELTA}" PATIENCE_VALUE="${PATIENCE}" VAL_LOG="${VAL_LOG}" EARLY_STOP_STATE="${EARLY_STOP_STATE}" uv run python - <<'PY'
+import json
+import math
+import os
+import re
+from pathlib import Path
+
+early_stop_dir = Path(os.environ["EARLY_STOP_DIR"])
+current_step = int(os.environ["CURRENT_STEP"])
+min_delta = float(os.environ["MIN_DELTA_VALUE"])
+patience = int(os.environ["PATIENCE_VALUE"])
+val_log = Path(os.environ["VAL_LOG"])
+early_stop_state = Path(os.environ["EARLY_STOP_STATE"])
+records = []
+for path in sorted(early_stop_dir.glob("validation_step_*.json")):
+    match = re.search(r"validation_step_(\d+)\.json$", path.name)
+    if not match:
+        continue
+    step = int(match.group(1))
+    if step > current_step:
+        continue
+    data = json.loads(path.read_text())
+    records.append((step, data))
+
+best_loss = math.inf
+best_checkpoint = ""
+patience_counter = 0
+history = []
+for step, data in records:
+    val_loss = float(data["validation_loss"])
+    checkpoint_path = data.get("checkpoint", "")
+    improved = val_loss < best_loss - min_delta
+    if improved:
+        best_loss = val_loss
+        best_checkpoint = checkpoint_path
+        patience_counter = 0
+    else:
+        patience_counter += 1
+    history.append(
+        {
+            "step": step,
+            "checkpoint_path": checkpoint_path,
+            "validation_loss": val_loss,
+            "best_checkpoint": best_checkpoint,
+            "best_loss": best_loss,
+            "patience_counter": patience_counter,
+            "patience": patience,
+            "min_delta": min_delta,
+        }
+    )
+
+if not history:
+    print(json.dumps({"best_loss": "inf", "best_checkpoint": "", "patience_counter": 0, "recovered": 0}))
+    raise SystemExit
+
+state = dict(history[-1])
+state["stopped"] = state["patience_counter"] >= patience
+early_stop_state.write_text(json.dumps(state, indent=2) + "\n")
+if not val_log.exists() or val_log.stat().st_size == 0:
+    val_log.write_text("".join(json.dumps(item) + "\n" for item in history))
+
+print(
+    json.dumps(
+        {
+            "best_loss": state["best_loss"],
+            "best_checkpoint": state["best_checkpoint"],
+            "patience_counter": state["patience_counter"],
+            "recovered": len(history),
+        }
+    )
+)
+PY
+)
+    best_loss=$(RECOVERY_JSON="${recovery_json}" uv run python -c "import json, os; print(json.loads(os.environ['RECOVERY_JSON'])['best_loss'])")
+    best_checkpoint=$(RECOVERY_JSON="${recovery_json}" uv run python -c "import json, os; print(json.loads(os.environ['RECOVERY_JSON'])['best_checkpoint'])")
+    patience_counter=$(RECOVERY_JSON="${recovery_json}" uv run python -c "import json, os; print(json.loads(os.environ['RECOVERY_JSON'])['patience_counter'])")
+    recovered_validations=$(RECOVERY_JSON="${recovery_json}" uv run python -c "import json, os; print(json.loads(os.environ['RECOVERY_JSON'])['recovered'])")
+    echo "[early-stop] recovered ${recovered_validations} previous validation result(s) from ${EARLY_STOP_DIR}"
   fi
   echo "[early-stop] resuming orchestration from step ${current_step}, checkpoint ${last_checkpoint}"
 else
@@ -99,6 +184,10 @@ while (( current_step < MAX_STEPS )); do
 
   if [[ -n "${TRAIN_BATCH_SIZE}" ]]; then
     train_args+=(--batch_size="${TRAIN_BATCH_SIZE}")
+  fi
+
+  if [[ -n "${WANDB_MODE}" ]]; then
+    train_args+=(--wandb.mode="${WANDB_MODE}")
   fi
 
   if [[ -n "${last_checkpoint}" ]]; then

@@ -228,7 +228,7 @@ def make_temporal_video_dataset(cfg):
         download_videos=False,
     )
     dataset = TemporalVideoDataset(base_dataset, use_imagenet_stats=cfg.dataset.use_imagenet_stats)
-    print("[temporal-smolvla] using runtime temporal video dataset (方案B)")
+    print("[temporal-smolvla] using runtime temporal video dataset")
     print(f"[temporal-smolvla] repo_id={cfg.dataset.repo_id}, root={cfg.dataset.root}, video_backend={video_backend}")
     print(f"[temporal-smolvla] temporal image keys={sorted(EXPECTED_TEMPORAL_IMAGE_KEYS)}")
     return dataset

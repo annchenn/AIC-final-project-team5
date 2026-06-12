@@ -12,6 +12,8 @@
 """Launch Isaac Sim Simulator first."""
 import json as _json
 import multiprocessing
+import re
+from collections import deque
 from pathlib import Path as _Path
 
 
@@ -73,7 +75,12 @@ from isaaclab.app import AppLauncher
 parser = argparse.ArgumentParser(
     description="Synchronous LeRobot inference for LeIsaac simulation."
 )
-parser.add_argument("--task", type=str, default=None, help="Name of the task.")
+parser.add_argument(
+    "--task",
+    type=str,
+    default=None,
+    help="Task as a Gym ID, a .py file path, or a module:Class reference.",
+)
 parser.add_argument(
     "--step_hz", type=int, default=60, help="Environment stepping rate in Hz."
 )
@@ -101,6 +108,12 @@ parser.add_argument(
     type=int,
     default=16,
     help="Number of actions to execute per policy call.",
+)
+parser.add_argument(
+    "--policy_observation_fps",
+    type=float,
+    default=30.0,
+    help="Frame rate used to sample temporal camera observations.",
 )
 parser.add_argument(
     "--policy_language_instruction",
@@ -316,7 +329,6 @@ class LeRobotSyncPolicy:
                 f"Task type {task_type} not supported for synchronous LeRobot inference yet."
             )
 
-        self.lerobot_features = self._build_lerobot_features(camera_infos)
         self.camera_keys = list(camera_infos.keys())
 
         print(
@@ -332,6 +344,13 @@ class LeRobotSyncPolicy:
         self.policy.to(device)
         self.policy.eval()
 
+        self.temporal_image_keys = self._parse_temporal_image_keys()
+        self.lerobot_features = self._build_lerobot_features(camera_infos)
+        self.image_history = {
+            camera_key: deque(maxlen=max(-offset for offset, _ in temporal_keys) + 1)
+            for camera_key, temporal_keys in self.temporal_image_keys.items()
+        }
+
         device_override = {"device": device}
         self.preprocessor, self.postprocessor = make_pre_post_processors(
             self.policy.config,
@@ -345,9 +364,30 @@ class LeRobotSyncPolicy:
         print("Local LeRobot policy is ready.", flush=True)
 
     def reset(self):
+        for history in self.image_history.values():
+            history.clear()
         policy_reset = getattr(self.policy, "reset", None)
         if callable(policy_reset):
             policy_reset()
+
+    def _parse_temporal_image_keys(self) -> dict[str, list[tuple[int, str]]]:
+        temporal_keys: dict[str, list[tuple[int, str]]] = {}
+        for feature_key in self.policy.config.image_features:
+            raw_key = feature_key.removeprefix("observation.images.")
+            match = re.fullmatch(r"(.+)_t(-?\d+)", raw_key)
+            if match is None:
+                camera_key = raw_key
+                offset = 0
+            else:
+                camera_key, offset_text = match.groups()
+                offset = int(offset_text)
+            if offset > 0:
+                raise ValueError(f"Future temporal image offset is not supported: {feature_key}")
+            temporal_keys.setdefault(camera_key, []).append((offset, raw_key))
+
+        for keys in temporal_keys.values():
+            keys.sort(reverse=True)
+        return temporal_keys
 
     def _build_lerobot_features(
         self, camera_infos: dict[str, tuple[int, int]]
@@ -359,19 +399,42 @@ class LeRobotSyncPolicy:
                 "names": [f"{joint_name}.pos" for joint_name in self.state_joint_names],
             }
         }
-        for camera_key, camera_image_shape in camera_infos.items():
-            features[f"observation.images.{camera_key}"] = {
-                "dtype": "image",
-                "shape": (camera_image_shape[0], camera_image_shape[1], 3),
-                "names": ["height", "width", "channels"],
-            }
+        missing_cameras = sorted(set(self.temporal_image_keys) - set(camera_infos))
+        if missing_cameras:
+            raise ValueError(
+                f"Policy requires cameras {missing_cameras}, but the environment only provides {sorted(camera_infos)}."
+            )
+
+        for camera_key, temporal_keys in self.temporal_image_keys.items():
+            camera_image_shape = camera_infos[camera_key]
+            for _, raw_key in temporal_keys:
+                features[f"observation.images.{raw_key}"] = {
+                    "dtype": "image",
+                    "shape": (camera_image_shape[0], camera_image_shape[1], 3),
+                    "names": ["height", "width", "channels"],
+                }
         return features
 
+    def observe(self, observation_dict: dict) -> None:
+        for camera_key, history in self.image_history.items():
+            frame = observation_dict[camera_key].cpu().numpy().astype(np.uint8)[0]
+            history.append(frame)
+
+    def _temporal_raw_images(self, observation_dict: dict) -> dict[str, np.ndarray]:
+        if any(not history for history in self.image_history.values()):
+            self.observe(observation_dict)
+
+        images = {}
+        for camera_key, temporal_keys in self.temporal_image_keys.items():
+            history = self.image_history[camera_key]
+            while len(history) < history.maxlen:
+                history.appendleft(history[0])
+            for offset, raw_key in temporal_keys:
+                images[raw_key] = history[offset - 1]
+        return images
+
     def _build_raw_observation(self, observation_dict: dict) -> dict[str, Any]:
-        raw_observation = {
-            key: observation_dict[key].cpu().numpy().astype(np.uint8)[0]
-            for key in self.camera_keys
-        }
+        raw_observation = self._temporal_raw_images(observation_dict)
         raw_observation["task"] = observation_dict["task_description"]
 
         if self.task_type == "so101leader":
@@ -467,6 +530,12 @@ def get_camera_infos(
 
 
 def main():
+    if not 0 < args_cli.policy_observation_fps <= args_cli.step_hz:
+        raise ValueError(
+            "policy_observation_fps must be positive and no greater than step_hz, "
+            f"got {args_cli.policy_observation_fps} and {args_cli.step_hz}."
+        )
+
     task_id = resolve_task(args_cli.task)
     args_cli.task = task_id
     env_cfg = parse_env_cfg(task_id, device=args_cli.device, num_envs=1)
@@ -524,6 +593,7 @@ def main():
     )
 
     rate_limiter = RateLimiter(args_cli.step_hz)
+    temporal_sample_accumulator = 0.0
     controller = Controller()
     controller.reset()
 
@@ -564,6 +634,7 @@ def main():
                     controller.reset()
                     obs_dict, _ = env.reset()
                     policy.reset()
+                    temporal_sample_accumulator = 0.0
                     episode_count += 1
                     break
 
@@ -578,6 +649,12 @@ def main():
                     if env.cfg.dynamic_reset_gripper_effort_limit:
                         dynamic_reset_gripper_effort_limit_sim(env, teleop_device)
                     obs_dict, _, reset_terminated, reset_time_outs, _ = env.step(action)
+                    temporal_sample_accumulator += args_cli.policy_observation_fps
+                    if temporal_sample_accumulator >= args_cli.step_hz:
+                        temporal_sample_accumulator -= args_cli.step_hz
+                        policy.observe(
+                            preprocess_obs_dict(obs_dict["policy"], language_instruction)
+                        )
                     if not captured and _cube_is_captured():
                         captured = True
                     if _termination_term("success"):
@@ -598,6 +675,7 @@ def main():
                 if captured:
                     capture_count += 1
                 policy.reset()
+                temporal_sample_accumulator = 0.0
                 break
             if failed:
                 print(f"[Evaluation] Episode {episode_count} terminated without success! (captured={captured})")
@@ -605,6 +683,7 @@ def main():
                 if captured:
                     capture_count += 1
                 policy.reset()
+                temporal_sample_accumulator = 0.0
                 break
             if time_out:
                 print(f"[Evaluation] Episode {episode_count} timed out! (captured={captured})")
@@ -612,6 +691,7 @@ def main():
                 if captured:
                     capture_count += 1
                 policy.reset()
+                temporal_sample_accumulator = 0.0
                 break
         completed = episode_count - 1
         _pr = f"{success_count / capture_count:.3f}" if capture_count > 0 else "n/a"
