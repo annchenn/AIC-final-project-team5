@@ -2,6 +2,7 @@
 	submodules submodules-pull \
 	build-isaaclab launch-isaaclab \
 	launch-isaaclab-glowsai-4090 launch-isaaclab-glowsai-l40s \
+	launch-isaaclab-gpu1 \
 	check-isaaclab-gpu
 
 # ---- Config ------------------------------------------------------------------
@@ -167,6 +168,49 @@ launch-isaaclab-glowsai-l40s: build-isaaclab
 		bash -lc '\
 			set -e; \
 			echo "=== GlowsAI L40S ==="; \
+			echo "Display: $$DISPLAY"; \
+			echo "VGL_DISPLAY: $$VGL_DISPLAY"; \
+			echo "== GPU check =="; nvidia-smi || true; \
+			echo "== Vulkan ICD candidates =="; \
+			ls -l /usr/share/vulkan/icd.d /etc/vulkan/icd.d 2>/dev/null || true; \
+			$(select_vulkan_icd); \
+			$(require_runtime_libs); \
+			cd /workspace/aicapstone; \
+			exec /bin/bash \
+		'
+
+# ---- Launch: GPU 1 with VirtualGL --------------------------------------------
+launch-isaaclab-gpu1: build-isaaclab
+	@set -e; \
+	xhost +local:root >/dev/null || true; \
+	trap 'xhost -local:root >/dev/null || true' EXIT; \
+	docker run --rm -it \
+		--name $(CONTAINER_NAME)-gpu1 \
+		--gpus '"device=1"' \
+		--net=host \
+		--ipc=host \
+		--ulimit memlock=-1 \
+		--ulimit stack=67108864 \
+		--shm-size=16g \
+		-v $(shell pwd):/workspace/aicapstone \
+		-v /workspace/aicapstone/.venv \
+		-v $(HOME)/.Xauthority:/root/.Xauthority:ro \
+		-v /tmp/.X11-unix:/tmp/.X11-unix:rw \
+		-v /opt/VirtualGL:/opt/VirtualGL:ro \
+		-v /usr/share/vulkan/icd.d:/usr/share/vulkan/icd.d:ro \
+		-v /etc/vulkan/icd.d:/etc/vulkan/icd.d:ro \
+		-e DISPLAY=$$DISPLAY \
+		-e VGL_DISPLAY=egl0 \
+		-e PATH=/opt/VirtualGL/bin:$$PATH \
+		-e OMNI_KIT_ACCEPT_EULA=Y \
+		-e PRIVACY_CONSENT=Y \
+		-e QT_X11_NO_MITSHM=1 \
+		-e NVIDIA_VISIBLE_DEVICES=1 \
+		-e NVIDIA_DRIVER_CAPABILITIES=graphics,display,utility,compute \
+		$(IMAGE) \
+		bash -lc '\
+			set -e; \
+			echo "=== GPU 1 + VirtualGL ==="; \
 			echo "Display: $$DISPLAY"; \
 			echo "VGL_DISPLAY: $$VGL_DISPLAY"; \
 			echo "== GPU check =="; nvidia-smi || true; \
